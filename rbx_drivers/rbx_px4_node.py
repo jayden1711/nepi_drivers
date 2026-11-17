@@ -34,9 +34,9 @@ from mavros_msgs.srv import CommandBool, CommandBoolRequest, SetMode, SetModeReq
 
 from sensor_msgs.msg import NavSatFix, BatteryState
 
-from nepi_interfaces.msg import AxisControls
-
 from nepi_api.device_if_rbx import RBXRobotIF
+from nepi_api.device_if_npx import NPXDeviceIF
+from nepi_api.device_if_svx import DeviceSVXIF
 from nepi_api.messages_if import MsgIF
 
 PKG_NAME = 'RBX_PX4' # Use in display menus
@@ -185,8 +185,8 @@ class PX4Node:
   # expected to spin; 1 = full; NaN = stop), param2 a timeout PX4 clamps to
   # 3 s (0 or less releases control at once), param5 the output function
   # (ACTUATOR_OUTPUT_FUNCTION_MOTORn = n). PX4 answers DENIED while armed or
-  # with the safety switch engaged. Because of the 3 s cap, a motor held on
-  # the slider is resent every MOTOR_TEST_REFRESH_SEC.
+  # with the safety switch engaged. Because of the 3 s cap, a motor left
+  # running from the Servo page is resent every MOTOR_TEST_REFRESH_SEC.
   MAV_CMD_ACTUATOR_TEST = 310
   ACTUATOR_TEST_TIMEOUT_SEC = 3.0
   MOTOR_TEST_REFRESH_SEC = 1.0
@@ -216,13 +216,27 @@ class PX4Node:
   init_settings_dict = dict()
   settings_dict = dict()
 
-  axis_controls = AxisControls()
-  axis_controls.x = True
-  axis_controls.y = True
-  axis_controls.z = True
-  axis_controls.roll = True
-  axis_controls.pitch = True
-  axis_controls.yaw = True
+  caps_dict = dict()
+  caps_dict['has_x_control'] = True
+  caps_dict['has_y_control'] = True
+  caps_dict['has_z_control'] = True
+
+  caps_dict['has_roll_control'] = True
+  caps_dict['has_pitch_control'] = True
+  caps_dict['has_yaw_control'] = True
+
+  OWN_NAVPOSE_MAX_TRIES = 60 # 1 s apart
+  own_navpose_topic = None
+  own_navpose_tries = 0
+
+  # Every motor is its own DeviceSVXIF, named <device name>_motor_<n> (n from
+  # 1), keyed by that name in motor_svx_if_dict, which RBXRobotIF gets as its
+  # servo_if_dict. See createMotorSvxIfs.
+  motor_svx_if_dict = dict()
+  motor_svx_dirs = []
+  motor_svx_speed_ratios = []
+  motor_svx_stop_triggers = []
+  motor_svx_cmds_enabled = False
 
   state_ind = 0
   state_current = "None"
@@ -410,10 +424,25 @@ class PX4Node:
     self.settings_dict = self.refreshSettingsDict()
 
     # Per-motor commanded test ratios (0-1) and the time of each motor's last
-    # slider change, which motor_test_timeout_s is measured from.
+    # Servo page command, which motor_test_timeout_s is measured from.
     motor_count = int(nepi_controls.get_value(self.settings_dict, 'motor_count'))
     self.motor_ratios = [0.0] * motor_count
     self.motor_change_times = [0.0] * motor_count
+    # One servo (SVX) device per motor, named <device name>_motor_<n>. The
+    # motor count is read from the motor_count setting HERE, once: changing
+    # motor_count later resizes motor_ratios but adds or removes no motor
+    # servo devices. This is the factory value, read before RBXRobotIF's
+    # SettingsIF restores saved settings, so a saved motor_count does not
+    # change the device count even after a restart. The names are entered now so
+    # RBXRobotIF sees its manual (servo) controls at construction; the
+    # DeviceSVXIF instances that share its IFs fill them in afterwards
+    # (createMotorSvxIfs).
+    self.motor_svx_if_dict = dict()
+    for motor_ind in range(motor_count):
+      self.motor_svx_if_dict[self.device_name + "_motor_" + str(motor_ind + 1)] = None
+    self.motor_svx_dirs = [1] * motor_count
+    self.motor_svx_speed_ratios = [0.0] * motor_count
+    self.motor_svx_stop_triggers = [False] * motor_count
 
 
     # Launch the NEPI RBX interface -- this takes care of initializing all the rbx
@@ -435,7 +464,7 @@ class PX4Node:
                                   data_source_description = ('simulator' if self.is_sitl else 'control_system'),
                                   getSettingsFunction = self.getSettingsFunction,
                                   setSettingFunction = self.setSettingFunction,
-                                  axisControls = self.axis_controls,
+                                  axisCapabilities = self.caps_dict,
                                   getBatteryPercentFunction = self.getBatteryPercent,
                                   states = self.RBX_STATES,
                                   getStateIndFunction = self.getStateInd,
@@ -449,8 +478,8 @@ class PX4Node:
                                   go_actions = self.RBX_GO_ACTIONS,
                                   setGoActionIndFunction = self.setGoActionInd,
                                   manualControlsReadyFunction = self.manualControlsReady,
-                                  getMotorControlRatios = self.getMotorControlRatios,
-                                  setMotorControlRatio = self.setMotorControlRatio,
+                                  # Motor test: one DeviceSVXIF per motor, see createMotorSvxIfs
+                                  servo_if_dict = self.motor_svx_if_dict,
                                   teleopControlsReadyFunction = self.teleopControlsReady,
                                   setTeleopVelocityFunction = self.setTeleopVelocity,
                                   autonomousControlsReadyFunction = self.autonomousControlsReady,
@@ -462,14 +491,40 @@ class PX4Node:
                                   gotoPositionFunction = self.gotoPosition,
                                   gotoLocationFunction = self.gotoLocation,
                                   gotoVelocityFunction = self.gotoVelocity,
-                                  getNavPoseCb = self.getNavPoseCb,
-                                  navpose_update_rate = self.POSITION_UPDATE_RATE,
                                   msg_if = self.msg_if
                                 )
 
 
     self.msg_if.pub_info("... RBX interface running")
-    time.sleep(1)
+    ready = self.rbx_if.wait_for_ready()
+
+    self.node_if = self.rbx_if.node_if
+    self.settings_if = self.rbx_if.settings_if
+    self.save_data_if = self.rbx_if.save_data_if
+    self.connect_navpose_if = self.rbx_if.connect_navpose_if
+    ##################################
+    # Setup NPX IF Class ####################
+    # The autopilot's navpose is published by an NPX device at
+    # <node>/<device_name>/npx/navpose, from getNavPoseCb, and selected as the
+    # RBX navpose source so RBXRobotIF's current_* control state tracks it.
+    self.msg_if.pub_debug("Starting NPX Device IF Initialization")
+    self.npx_if = NPXDeviceIF(device_info = self.device_info_dict,
+        data_source_description = ('simulator' if self.is_sitl else 'control_system'),
+        getNavPoseCb = self.getNavPoseCb,
+        max_navpose_update_rate = self.POSITION_UPDATE_RATE,
+        msg_if = self.msg_if,
+        node_if = self.node_if,
+        settings_if = self.settings_if,
+        save_data_if = self.save_data_if,
+        connect_navpose_if = self.connect_navpose_if
+        )
+    # Make the autopilot's own navpose the RBX navpose source.
+    self.own_navpose_topic = self.npx_if.navpose_if.get_namespace()
+    nepi_sdk.start_timer_process(1.0, self.selectOwnNavPoseCb, oneshot = True)
+
+    ##################################
+    # Setup Motor SVX IF Classes ####################
+    self.createMotorSvxIfs()
 
     ## Start the offboard setpoint stream. It publishes nothing until the
     ## first local pose arrives, then runs for the life of the node.
@@ -676,8 +731,9 @@ class PX4Node:
       self.reportMotorTestRejected(motor_ind)
 
   def getMotorTestOutput(self, speed_ratio):
-    # Scale the 0-100% slider ratio onto [0, motor_test_max_throttle_percent],
-    # so the cap integrates with the slider instead of overriding it.
+    # Scale the motor's 0-1 Servo page speed ratio onto
+    # [0, motor_test_max_throttle_percent], so the cap integrates with the
+    # Servo page's speed control instead of overriding it.
     max_throttle_percent = float(nepi_controls.get_value(self.settings_dict,'motor_test_max_throttle_percent'))
     return speed_ratio * max_throttle_percent / 100.0
 
@@ -723,9 +779,10 @@ class PX4Node:
     return released_list
 
   def motorTestRefreshCb(self, timer):
-    # PX4 ends any actuator test after 3 s, so a motor still on the slider is
-    # resent every MOTOR_TEST_REFRESH_SEC, until motor_test_timeout_s has
-    # passed since that motor's last slider change; then it is released.
+    # PX4 ends any actuator test after 3 s, so a motor still running from the
+    # Servo page is resent every MOTOR_TEST_REFRESH_SEC, until
+    # motor_test_timeout_s has passed since that motor's last Servo page
+    # command; then it is released.
     rejected_list = []
     with self.motor_lock:
       if len(self.motor_ratios) == 0 or max(self.motor_ratios) <= 0.0:
@@ -746,6 +803,104 @@ class PX4Node:
           rejected_list.append(motor_ind)
     for motor_ind in rejected_list:
       self.reportMotorTestRejected(motor_ind)
+
+
+  ##########################
+  # Motor Servo (SVX) Functions
+  # Every motor is its own DeviceSVXIF (a spin servo) on the RUI Servo page.
+  # Each callback acts on one motor through setMotorControlRatio above, so the
+  # PX4 actuator test path is unchanged: its checks (index range, 0-1 clamp,
+  # motor_test_max_throttle_percent), the motor_lock, the MOTOR_TEST_REFRESH_SEC
+  # resend and motor_test_timeout_s release in motorTestRefreshCb, and the
+  # rejection report all still apply. PX4 refuses an actuator test while armed
+  # or with the safety switch engaged. A negative (reverse) command clamps to 0
+  # there, which stops the motor: a PX4 actuator test cannot spin backwards.
+
+  def createMotorSvxIfs(self):
+    # One DeviceSVXIF per motor, shaped like ptx_iqr's per-axis servos: each
+    # shares the RBX interface's msg_if, node_if, settings_if, save_data_if and
+    # connect_navpose_if, and its <device name>_motor_<n> device name gives it
+    # its own <node>/<name>/svx namespace, status topic and node_if keys.
+    # Built after RBXRobotIF because they share its IFs; RBXRobotIF holds the
+    # same motor_svx_if_dict object, so it sees them once they are filled in.
+    self.msg_if.pub_info("Launching NEPI SVX motor interfaces...")
+    for motor_ind, motor_name in enumerate(list(self.motor_svx_if_dict.keys())):
+      motor_device_info = copy.deepcopy(self.device_info_dict)
+      motor_device_info["device_name"] = motor_name
+      self.motor_svx_if_dict[motor_name] = DeviceSVXIF(device_info = motor_device_info,
+                                        is_spin = True,
+                                        # Built into the robot, so always connected,
+                                        # with no Servo Connected toggle
+                                        always_connected = True,
+                                        stopMovingCb = lambda motor_ind = motor_ind: self.stopMotorSvx(motor_ind),
+                                        moveCb = lambda direction, time_s = None, motor_ind = motor_ind: self.moveMotorSvx(motor_ind, direction, time_s),
+                                        moveSpeedRatioCb = lambda direction, speed_ratio, time_s = None, motor_ind = motor_ind: self.moveMotorSvxSpeedRatio(motor_ind, direction, speed_ratio, time_s),
+                                        # The Servo page drives a spin servo with set_direction +
+                                        # set_speed_ratio, and its STOP button sends go_home
+                                        set_direction = lambda direction, motor_ind = motor_ind: self.setMotorSvxDirection(motor_ind, direction),
+                                        get_direction = lambda motor_ind = motor_ind: self.motor_svx_dirs[motor_ind],
+                                        setSpeedRatioCb = lambda speed_ratio, motor_ind = motor_ind: self.setMotorSvxSpeedRatio(motor_ind, speed_ratio),
+                                        getSpeedRatioCb = lambda motor_ind = motor_ind: self.motor_svx_speed_ratios[motor_ind],
+                                        goHomeCb = lambda motor_ind = motor_ind: self.stopMotorSvx(motor_ind),
+                                        msg_if = self.msg_if,
+                                        node_if = self.node_if,
+                                        settings_if = self.settings_if,
+                                        save_data_if = self.save_data_if,
+                                        connect_navpose_if = self.connect_navpose_if
+                                        )
+    # DeviceSVXIF's init restores its saved speed ratio through setSpeedRatioCb
+    # during construction. Run commands are ignored until here, so starting the
+    # node never spins a motor.
+    self.motor_svx_cmds_enabled = True
+    self.msg_if.pub_info(" ... SVX motor interfaces running: " + str(list(self.motor_svx_if_dict.keys())))
+
+  def stopMotorSvx(self, motor_ind):
+    self.motor_svx_stop_triggers[motor_ind] = True
+    self.setMotorControlRatio(motor_ind, 0.0)
+
+  def runMotorSvx(self, motor_ind, signed_ratio):
+    # Same gate the RBX interface applied to set_motor_control before 3.4
+    if self.motor_svx_cmds_enabled == False:
+      return False
+    if self.manualControlsReady() != True:
+      self.msg_if.pub_warn("Motor " + str(motor_ind + 1) + " command ignored: manual controls not ready")
+      return False
+    self.motor_svx_stop_triggers[motor_ind] = False
+    self.setMotorControlRatio(motor_ind, signed_ratio)
+    return True
+
+  def moveMotorSvx(self, motor_ind, direction, time_s = None):
+    # moveCb (jog_timed): direction and optional time, at this motor's speed ratio
+    self.moveMotorSvxSpeedRatio(motor_ind, direction, self.motor_svx_speed_ratios[motor_ind], time_s)
+
+  def moveMotorSvxSpeedRatio(self, motor_ind, direction, speed_ratio, time_s = None):
+    # moveSpeedRatioCb (jog_timed_speed_ratio): the signed ratio is the
+    # direction's sign times the speed ratio. As in ptx_iqr's timed jog, a
+    # positive time stops the motor once it elapses or a stop arrives; no time
+    # (or 0) runs until stopped.
+    sign = 1.0 if direction >= 0 else -1.0
+    if self.runMotorSvx(motor_ind, sign * float(speed_ratio)) == False:
+      return
+    if time_s is not None and time_s > 0:
+      start_time = nepi_utils.get_time()
+      while (nepi_utils.get_time() - start_time) < time_s and self.motor_svx_stop_triggers[motor_ind] == False and not nepi_sdk.is_shutdown():
+        nepi_sdk.sleep(0.1)
+      if self.motor_svx_stop_triggers[motor_ind] == False:
+        self.stopMotorSvx(motor_ind)
+
+  def setMotorSvxDirection(self, motor_ind, direction):
+    self.motor_svx_dirs[motor_ind] = 1 if direction >= 0 else -1
+    # Re-command a running motor so a direction change at an unchanged speed
+    # ratio takes effect (DeviceSVXIF skips an unchanged set_speed_ratio)
+    ratios = self.getMotorControlRatios()
+    if motor_ind < len(ratios) and ratios[motor_ind] != 0:
+      self.runMotorSvx(motor_ind, self.motor_svx_dirs[motor_ind] * self.motor_svx_speed_ratios[motor_ind])
+
+  def setMotorSvxSpeedRatio(self, motor_ind, speed_ratio):
+    # For a spin servo the speed ratio is the run command: the Servo page's
+    # speed/direction slider sends set_direction, then set_speed_ratio.
+    self.motor_svx_speed_ratios[motor_ind] = float(speed_ratio)
+    self.runMotorSvx(motor_ind, self.motor_svx_dirs[motor_ind] * self.motor_svx_speed_ratios[motor_ind])
 
 
   ##############################
@@ -794,7 +949,7 @@ class PX4Node:
     self.setHoldTarget(x_m + point_enu_m.x, y_m + point_enu_m.y, z_m + point_enu_m.z,
                        math.radians(orientation_enu_deg[2]))
 
-  def gotoLocation(self,geopoint_amsl,orientation_ned_deg):
+  def gotoLocation(self,geopoint_amsl,orientation_enu_deg):
     loc_str = str(geopoint_amsl)
     self.msg_if.pub_info("Recieved Location setpoint command: " + loc_str)
     if self.navpose_dict['has_location'] != True:
@@ -811,7 +966,8 @@ class PX4Node:
                                                geopoint_amsl.latitude, geopoint_amsl.longitude,
                                                geopoint_amsl.altitude)
     [x_m, y_m, z_m, yaw_rad] = self.getCurrentPose()
-    yaw_enu_deg = nepi_nav.convert_yaw_ned2enu(orientation_ned_deg[2])
+    # 3.4 RBXRobotIF passes ENU orientation, so the yaw is used as is.
+    yaw_enu_deg = orientation_enu_deg[2]
     self.setHoldTarget(x_m + east_m, y_m + north_m, z_m + up_m, math.radians(yaw_enu_deg))
     return True
 
@@ -1111,9 +1267,44 @@ class PX4Node:
       return ""
 
 
-  ### Callback returning the full navpose dict to the RBX/NPX interface
+  ### Callback returning the full navpose dict to the NPX interface
   def getNavPoseCb(self):
-    return self.navpose_dict
+    # NavPose convention: ENU orientation and position from the EKF origin
+    # (mavros local_position/pose), compass heading_deg (compass_hdg), WGS84
+    # location with altitude_m the mavros global_position/global altitude and
+    # geoid_height_meters 0 (global_position/global).
+    # Returns None until the local pose and the global fix have both arrived:
+    # NPXDeviceIF derives its has_* capabilities once, from the first dict it
+    # gets, so a blank dict returned before telemetry would fix every
+    # capability at False for the life of the node.
+    if self.navpose_dict['has_orientation'] == False or self.navpose_dict['has_location'] == False:
+      return None
+    return copy.deepcopy(self.navpose_dict)
+
+  def selectOwnNavPoseCb(self, timer):
+    # Select the autopilot's own NPX navpose as the RBX navpose source once the
+    # connect has discovered it. Only a startup default is replaced ('None',
+    # '', or the node namespace that older saved configs hold), never a
+    # source the operator picked, and it gives up after a bounded number of
+    # tries so a navpose that never appears costs nothing.
+    connect_if = self.connect_navpose_if
+    if connect_if is None or self.own_navpose_topic is None or nepi_sdk.is_shutdown():
+      return
+    selected = connect_if.get_selected_topic()
+    if selected == self.own_navpose_topic:
+      return
+    if selected not in ['None', '', None, self.node_namespace]:
+      self.msg_if.pub_info("Keeping operator navpose source: " + str(selected))
+      return
+    if self.own_navpose_topic in connect_if.get_available_topics():
+      connect_if.set_selected_topic(self.own_navpose_topic)
+      self.msg_if.pub_info("Selected own navpose source: " + self.own_navpose_topic)
+      return
+    self.own_navpose_tries += 1
+    if self.own_navpose_tries < self.OWN_NAVPOSE_MAX_TRIES:
+      nepi_sdk.start_timer_process(1.0, self.selectOwnNavPoseCb, oneshot = True)
+    else:
+      self.msg_if.pub_warn("Own navpose source never appeared, leaving navpose unselected: " + self.own_navpose_topic)
 
   #######################
   # Mavlink Interface Methods
