@@ -22,6 +22,7 @@ import subprocess
 import time
 import string
 import serial
+import serial.tools.list_ports
 
 
 from nepi_sdk import nepi_sdk
@@ -33,7 +34,7 @@ from nepi_sdk import nepi_serial
 PKG_NAME = 'LSX_SIDUS_SS182_SERIAL' # Use in display menus
 FILE_TYPE = 'DISCOVERY'
 
- 
+
 #########################################
 # LSX Discover Method
 #########################################
@@ -48,6 +49,22 @@ class SidusSS182SerialDiscovery:
 
   data_len = 4
 
+  # The light answers a DSN read within a few character times at 9600 baud,
+  # so a short per-address wait keeps a silent port cheap. drivers_mgr runs
+  # every driver's discoveryFunction in turn on one thread.
+  PROBE_REPLY_TIMEOUT_SEC = 0.3
+  PORT_READ_TIMEOUT_SEC = 0.05
+  # A port that answered nothing is re-probed at this interval, not every cycle.
+  SILENT_RETRY_SEC = 30.0
+  # A node that exits soon after launch is not relaunched until this has passed.
+  NODE_LOAD_TIME_SEC = 10
+
+  # ttyACM ports belong to Teensy, Pololu Maestro and PX4 boards on these
+  # systems and never receive Sidus frames, unless the USB vendor is a
+  # USB-UART bridge maker whose chip enumerated under cdc_acm:
+  # WCH, FTDI, Silicon Labs, Prolific.
+  BRIDGE_USB_VIDS = [0x1A86, 0x0403, 0x10C4, 0x067B]
+
   active_paths_list = []
 
   active_devices_dict = dict()
@@ -55,14 +72,14 @@ class SidusSS182SerialDiscovery:
   baudrate_list = []
   baud_str = '9600'
   baud_int = 9600
-  addr_str = "001"
+  addr_str = "A"
 
   dont_retry_list = []
 
   includeDevices = []
   excludedDevices = ['ttyACM']
 
-  ################################################          
+  ################################################
   def __init__(self):
     # Create Message Logger
     self.log_name = PKG_NAME.lower() + "_discovery"
@@ -70,6 +87,10 @@ class SidusSS182SerialDiscovery:
     time.sleep(1)
     self.logger.log_info("Starting Initialization")
     self.letters_list = list(string.ascii_uppercase)
+    self.active_devices_dict = dict()
+    self.launch_time_dict = dict()
+    self.silent_ports_dict = dict() # path_str: time of the last probe that got no reply
+    self.retry = True
     self.logger.log_info("Initialization Complete")
 
   ##########  Nex Standard Discovery Function
@@ -131,7 +152,7 @@ class SidusSS182SerialDiscovery:
       self.data_len = 4
       self.logger.log_debug("Using default data length: " + str(self.data_len))
       return self.active_paths_list
-    
+
 
     ########################
     # Retry behavior
@@ -142,13 +163,19 @@ class SidusSS182SerialDiscovery:
     # Create path search options
     self.path_list = nepi_serial.get_serial_ports_list()
     #self.logger.log_debug("ports list: " + str(self.path_list))###
+    for path_str in list(self.silent_ports_dict.keys()):
+      if path_str not in self.path_list:
+        del self.silent_ports_dict[path_str]
+    bridge_acm_paths = self.getBridgeAcmPaths()
 
     ### Purge Unresponsive Connections
     path_purge_list = []
     for path_str in self.active_devices_dict:
         success = self.checkOnDevice(path_str)
         if success == False:
-          path_purge_list.append(path_str) 
+          path_purge_list.append(path_str)
+          if self.retry == False:
+            self.dont_retry_list.append(path_str)
     # Clean up the active_devices_dict
     for path_str in path_purge_list:
       del  self.active_devices_dict[path_str]
@@ -157,15 +184,20 @@ class SidusSS182SerialDiscovery:
 
     ### Checking for devices on available paths
     for path_str in self.path_list:
-      valid_path = True
-      for id in self.excludedDevices:
-        if path_str.find(id) != -1 or path_str in self.active_paths_list:
-          valid_path = False
+      valid_path = path_str not in self.active_paths_list
+      if valid_path:
+        for id in self.excludedDevices:
+          if path_str.find(id) != -1:
+            valid_path = False
+            if id == 'ttyACM' and path_str in bridge_acm_paths:
+              valid_path = True
+      if valid_path and path_str in self.silent_ports_dict.keys():
+        valid_path = (nepi_sdk.get_time() - self.silent_ports_dict[path_str]) > self.SILENT_RETRY_SEC
       if valid_path:
         self.logger.log_debug("Looking for path: " + path_str)
         self.logger.log_debug("In path_list: " + str(self.active_paths_list))
 
-        found = self.checkForDevice("/dev/ttyUSB0")    #(path_str)
+        found = self.checkForDevice(path_str)
         if found and path_str not in self.dont_retry_list:
           success = self.launchDeviceNode(path_str)
           if success:
@@ -174,96 +206,164 @@ class SidusSS182SerialDiscovery:
   ################################################
 
   ##########  Device specific calls
+  def getBridgeAcmPaths(self):
+    bridge_paths = []
+    try:
+      for port in serial.tools.list_ports.comports():
+        if port.vid is not None and port.vid in self.BRIDGE_USB_VIDS:
+          bridge_paths.append(port.device)
+    except Exception as e:
+      self.logger.log_debug("Failed to read USB vendor ids: " + str(e))
+    return bridge_paths
+
+
+  def getFrame(self,line,prefix):
+    # A reply is 10 characters from its prefix: & addr MNE DATA R/W. A glitch
+    # byte from the RS485 turnaround can sit ahead of it on the same line.
+    ind = line.find(prefix)
+    if ind < 0:
+      return None
+    frame = line[ind:ind + 10]
+    if len(frame) == 10 and frame[9] in ('R','W'):
+      return frame
+    return None
+
+
+  def readProbeReply(self,serial_port,prefix,timeout_sec):
+    # Lines without the expected prefix (power-up banner, noise) are skipped.
+    deadline = time.monotonic() + timeout_sec
+    pending = b''
+    while time.monotonic() < deadline:
+      chunk = serial_port.readline()
+      if len(chunk) == 0:
+        continue
+      pending += chunk
+      if pending.endswith(b'\n') == False:
+        continue
+      line = pending.decode('ascii', errors = 'ignore')
+      pending = b''
+      frame = self.getFrame(line,prefix)
+      if frame is not None:
+        return frame
+    if len(pending) > 0:
+      return self.getFrame(pending.decode('ascii', errors = 'ignore'),prefix)
+    return None
+
+
   def checkForDevice(self,path_str):
     self.logger.log_debug("Entering check for device function for path: " + str(path_str))###
     found_device = False
-    if path_str not in self.active_paths_list:
-      for baud_str in self.baudrate_list:
-        self.baud_str = baud_str
-        self.baud_int = int(baud_str)
-        try:
-          # Try and open serial port
-          serial_port = serial.Serial(path_str,self.baud_int,timeout = 1)
-        except Exception as e:
-          #self.logger.log_info("Unable to open serial port " + path_str + " with baudrate: " + baud_str + "(" + str(e) + ")")
-          continue
-        #################################################
+    if path_str in self.active_paths_list:
+      return found_device
+    for baud_str in self.baudrate_list:
+      try:
+        # Try and open serial port. exclusive takes a flock, so a port some
+        # other process holds under flock fails to open here instead of
+        # having this probe written into it.
+        serial_port = serial.Serial(path_str,int(baud_str),timeout = self.PORT_READ_TIMEOUT_SEC, exclusive = True)
+      except Exception as e:
+        self.logger.log_debug("Unable to open serial port " + path_str + " with baudrate: " + baud_str + " (" + str(e) + ")")
+        return found_device
+      #################################################
+      try:
         for addr_str in self.addr_search_list:
           data_str = ''
           for i in range(self.data_len):
             data_str = data_str + '0'
           ser_msg= ('&' + addr_str + 'DSN' + data_str + 'R')
           ser_str = (ser_msg + '\r\n')
-          ################################################  
+          ################################################
           # Send Serial String
-          self.logger.log_debug("")
-          self.logger.log_debug("Sending serial message: " + ser_msg)
+          self.logger.log_debug("Sending serial message: " + ser_msg + " on " + path_str + " at " + baud_str)
           b=bytearray()
           b.extend(map(ord, ser_str))
           try:
+            serial_port.reset_input_buffer()
             serial_port.write(b)
-            self.logger.log_debug("Waiting for response")
-            nepi_sdk.sleep(.010)
-            bs = serial_port.readline()
-            response = bs.decode()
+            response = self.readProbeReply(serial_port,ser_msg[0:5],self.PROBE_REPLY_TIMEOUT_SEC)
           except Exception as e:
-            self.logger.log_info("Got a serial read/write error: " + str(e))
+            self.logger.log_info("Got a serial read/write error on " + path_str + ": " + str(e))
             break
-          self.logger.log_debug("Got response: " + response)
-          if len(response) > 5:
-            if response[0:5] == ser_msg[0:5]:
-              self.addr_str = response[1]
-              self.logger.log_info("Found device at path: " + path_str)
-              self.logger.log_info("Found device at address: " + self.addr_str)
-              found_device = True
-              break # Don't check any more addresses
+          self.logger.log_debug("Got response: " + str(response))
+          # A reply carrying ERRn in its DATA still identifies the light
+          if response is not None:
+            self.baud_str = baud_str
+            self.baud_int = int(baud_str)
+            self.addr_str = addr_str
+            self.logger.log_info("Found SS182 light at path: " + path_str + " baudrate: " + baud_str + " address: " + addr_str + " reply: " + response)
+            found_device = True
+            break # Don't check any more addresses
+      finally:
         # Clean up the serial port
-        serial_port.close()
+        try:
+          serial_port.close()
+        except Exception:
+          pass
+      if found_device:
+        break # Don't check any more baud rates
+
+    if found_device:
+      self.silent_ports_dict.pop(path_str, None)
+    else:
+      if path_str not in self.silent_ports_dict.keys():
+        self.logger.log_info("No SS182 light answered on " + path_str + " at " + ", ".join(self.baudrate_list) +
+                             " baud -- will re-check it every " + str(int(self.SILENT_RETRY_SEC)) + " s")
+      self.silent_ports_dict[path_str] = nepi_sdk.get_time()
     return found_device
 
 
   def checkOnDevice(self,path_str):
-    self.logger.log_debug("Entering check for device function for path: " + str(path_str))###
+    self.logger.log_debug("Entering check on device function for path: " + str(path_str))###
     active = True
     if path_str not in self.available_paths_list:
       active = False
-    if active == False:
       self.logger.log_info("No longer detecting device on : " + path_str)
+    elif path_str in self.active_devices_dict:
+      sub_process = self.active_devices_dict[path_str].get('sub_process')
+      if sub_process is not None and sub_process.poll() is not None:
+        active = False  # node process has exited
+        self.logger.log_info("Driver node exited for device on : " + path_str + " -- will re-probe it")
+    if active == False:
       if path_str in self.active_devices_dict.keys():
         path_entry = self.active_devices_dict[path_str]
         node_name = path_entry['node_name']
         sub_process = path_entry['sub_process']
-        self.dont_retry_list.append(path_str)
         success = nepi_drvs.killDriverNode(node_name,sub_process)
     return active
 
 
   def launchDeviceNode(self, path_str):
     self.logger.log_debug("Entering launch device function for path: " + str(path_str) + ' addr: ' + str(self.addr_str))###
+    success = False
+    launch_id = path_str
+
+    # Check if should try to launch
+    if launch_id in self.launch_time_dict.keys():
+      if (nepi_sdk.get_time() - self.launch_time_dict[launch_id]) <= self.NODE_LOAD_TIME_SEC:
+        return success
+
     file_name = self.drv_dict['NODE_DICT']['file_name']
     device_name = self.node_launch_name + "_" + path_str.split('/')[-1] + "_" + str(self.addr_str)
     node_name = nepi_system.get_device_alias(device_name)
-    self.logger.log_debug(" launching node: " + node_name)
-    #Setup required param server drv_dict for discovery node
+    self.logger.log_info("Launching node: " + node_name + " with path: " + path_str + " baudrate: " + self.baud_str + " addr: " + self.addr_str)
 
-    
     #Setup required param server drv_dict for discovery node
     dict_param_name = nepi_sdk.create_namespace(self.base_namespace,node_name + "/drv_dict")
-    self.logger.log_debug(" launching node: " + str(self.drv_dict))
     self.drv_dict['DEVICE_DICT']={'device_name': device_name,
                                   'device_path': path_str}
     self.drv_dict['DEVICE_DICT']['baud_str'] = self.baud_str
     self.drv_dict['DEVICE_DICT']['addr_str'] = self.addr_str
     nepi_sdk.set_param(dict_param_name,self.drv_dict)
+    self.launch_time_dict[launch_id] = nepi_sdk.get_time()
     [success, msg, sub_process] = nepi_drvs.launchDriverNode(file_name, node_name, device_path = path_str)
     if success:
       self.active_devices_dict[path_str] = {'node_name': node_name, 'sub_process': sub_process}
-      self.active_paths_list.append(path_str)
     else:
       self.logger.log_info("Failed to lauch node: " + node_name + " with msg: " + msg)
       if self.retry == False:
         self.logger.log_info("Will not try relaunch for node: " + node_name)
         self.dont_retry_list.append(path_str)
+    return success
 
 
   def killAllDevices(self,active_paths_list):

@@ -19,9 +19,14 @@ driver:
         type: Selection
         options:
           - All
+          - '4800'
           - '9600'
-        default: All
-        value: All
+          - '19200'
+          - '38400'
+          - '57600'
+          - '115200'
+        default: '9600'
+        value: '9600'
 
       start_addr:
         type: 'String'
