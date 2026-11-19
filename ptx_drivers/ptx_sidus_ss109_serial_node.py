@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 import os
 import serial
@@ -233,7 +235,7 @@ class SidusSS109SerialPTXNode:
             # PTX controls, not settings. PTXActuatorIF also accepts a
             # getCapSettingsFunction argument, but that argument is inert --
             # it is never forwarded to SettingsIF, which has no such parameter;
-            # a control's type, bounds and options now ride in the controls
+            # a control's type, bounds and options ride in the controls
             # dict itself.
 
             self.home_pan_deg = 0.0
@@ -425,8 +427,18 @@ class SidusSS109SerialPTXNode:
             self.driver_setSoftLimits(min_pan_adj, max_pan_adj, min_tilt_adj, max_tilt_adj)
 
     def getSoftLimits(self):
-        # TODO: Driver unit conversion?
+        # Inverse of setSoftLimits: the device reports limits in its own
+        # direction, so flip and swap them back into the IF's direction.
+        # Without this, PTXActuatorIF.initCb's read-then-write at startup
+        # would mirror the hardware limits about home on every start.
+        # -999 (read failed) is passed through untouched.
         [min_pan,max_pan,min_tilt,max_tilt] = self.driver_getSoftLimits()
+        if self.PAN_DEG_DIR == -1:
+            [min_pan,max_pan] = [-999 if max_pan == -999 else max_pan * -1,
+                                 -999 if min_pan == -999 else min_pan * -1]
+        if self.TILT_DEG_DIR == -1:
+            [min_tilt,max_tilt] = [-999 if max_tilt == -999 else max_tilt * -1,
+                                   -999 if min_tilt == -999 else min_tilt * -1]
         soft_limits = [min_pan,max_pan,min_tilt,max_tilt]
         return soft_limits
 
@@ -1191,7 +1203,9 @@ class SidusSS109SerialPTXNode:
     def deg2pos_count(self, deg):
         dpc = self.config_dict['deg_per_count']
         home = self.config_dict['home'] 
-        count = int(deg/dpc + home)
+        # round, not int(): truncation toward zero turns a float like
+        # 3088.9999 into 3088, so a read-then-write could shift a count
+        count = int(round(deg/dpc + home))
         return count
 
 

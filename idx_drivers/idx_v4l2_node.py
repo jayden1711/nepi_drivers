@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 
 import sys
@@ -61,7 +63,11 @@ class V4l2CamNode:
 
 
     #Factory Control Values 
-    FACTORY_CONTROLS = dict( 
+    FACTORY_CONTROLS = dict(
+    # IDX publish cap. The IDX default is 10, which would hold a 30 fps USB camera to
+    # 10 Hz; 100 is the control's upper bound, so the camera's own framerate
+    # setting is the only limit.
+    max_framerate = 100,
     width_deg = 90,
     weight_deg = 60,    
     frame_id = 'sensor_frame' 
@@ -315,8 +321,14 @@ class V4l2CamNode:
                 setting_dict['options'] = options
                 setting_dict['name'] = 'framerate'
 
-                [success,framerate] = self.driver.getFramerate() 
-                setting_dict['default'] = str(framerate)
+                # Start the camera at the highest rate its current resolution
+                # supports, and make that the factory default. The camera's power-up
+                # rate can be the lowest it offers.
+                # A saved framerate setting is still
+                # applied over this by SettingsIF.init().
+                self.setHighestFramerate()
+                setting_dict['default'] = str(round(max(framerates),2))
+                [success,framerate] = self.driver.getFramerate()
                 self.current_fps = framerate
 
                 init_settings_dict['framerate'] = setting_dict
@@ -420,6 +432,12 @@ class V4l2CamNode:
 
 
 
+    def setHighestFramerate(self):
+        [success, framerates] = self.driver.getCurrentResolutionAvailableFramerates()
+        if success is not True or len(framerates) == 0:
+            return False, "No framerates available for the current resolution"
+        return self.driver.setFramerate(max(framerates))
+
     def getSettingsFunction(self):
         return self.settings_dict
 
@@ -446,32 +464,30 @@ class V4l2CamNode:
                             # self.msg_if.pub_debug(msg)
                     elif setting_name == "resolution":
                         # The value arrives as this method's setting_value
-                        # argument. `data` was left over from the retired
-                        # nepi_controls.get_data_from_setting() call (still
-                        # visible commented out below), so every resolution and
-                        # framerate update raised UnboundLocalError before it
-                        # touched the camera.
+                        # argument.
                         data = str(setting_value).split(":")
                         try:
-                            [success,framerate] = self.driver.getFramerate()
                             [success,brightness] = self.driver.getCameraControl('brightness')
                             width = int(data[0])
                             height = int(data[1])
                             res_dict = {'width': width, 'height': height}
                             success, msg = self.driver.setResolution(res_dict)
                             if success:
-                                # reset framerate if needed
+                                # Run at the highest rate the new resolution supports.
+                                # The rate read before the change can suit only the old
+                                # size: a NexiGo N60 powers up at 1920x1080 YUYV, where
+                                # 5 fps is the maximum, while 640x480 offers 30 fps.
+                                # An explicit or
+                                # saved framerate setting still wins: SettingsIF.init()
+                                # applies framerate after resolution.
                                 if 'framerate' in self.settings_dict.keys():
                                     nepi_sdk.sleep(1)
                                     try:
-                                        framerate = float(framerate)
-                                        ret = self.driver.setFramerate(framerate)
-                                        # if ret[0]:
-                                        #     self.msg_if.pub_debug("Updated framerate: " + str(framerate) )
-                                        # else:
-                                        #     self.msg_if.pub_debug("Failed to update framerate: " + str(framerate) + " : " + ret[1])
+                                        fr_success, fr_msg = self.setHighestFramerate()
+                                        if fr_success is not True:
+                                            self.msg_if.pub_debug("Failed to set highest framerate after resolution change: " + str(fr_msg))
                                     except Exception as e:
-                                        self.msg_if.pub_debug("Failed to update Framerate setting to: " + str(framerate) + " : " + str(e))
+                                        self.msg_if.pub_debug("Failed to set highest framerate after resolution change: " + str(e))
 
                                 # if 'brightness' in self.settings_dict.keys():
                                 #     nepi_sdk.sleep(1)
@@ -519,7 +535,7 @@ class V4l2CamNode:
                     if needs_update == True:
                         # Hold the image lock so the read-back can't land while getColorImg is
                         # reopening the capture: OpenCV opens the device at 640x480 before it
-                        # restores the real format, and a read in that window reported 640:480
+                        # restores the real format, and a read in that window would report 640:480
                         # (and its framerate) as the current resolution.
                         with self.img_lock:
                             self.settings_dict = self.refreshSettingsDict()
