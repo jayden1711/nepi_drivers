@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 import os
 import time
@@ -303,8 +305,8 @@ class ServosPTXNode:
 
         # The interface owns the selection: it persists it and rejects a topic that has
         # not been discovered yet. Adopt what it reports rather than pushing the local
-        # copy back in. Pushing back here re-sent the startup default 'None' on the first
-        # cycle, which the interface then persisted and save_config()'d.
+        # copy back in. Pushing back here would re-send the startup default 'None' on the first
+        # cycle, which the interface would then persist and save_config().
         # setSettingFunction is the only place a new selection is pushed in.
         available_topics = []
         for connect_if in [self.pan_connect_if, self.tilt_connect_if]:
@@ -410,14 +412,14 @@ class ServosPTXNode:
        
     def getNavPoseDict(self):
         pan_deg, tilt_deg = self.current_position
-        # A copy: assigning BLANK_NAVPOSE_DICT itself wrote this node's values into the
+        # A copy: assigning BLANK_NAVPOSE_DICT itself would write this node's values into the
         # shared module default
         navpose_dict = copy.deepcopy(nepi_nav.BLANK_NAVPOSE_DICT)
         navpose_dict['has_orientation'] = True
         navpose_dict['time_orientation'] = nepi_utils.get_time()
         navpose_dict['roll_deg'] = 0.0
         # current_position is already in the node frame; the axis direction was applied
-        # when it was sampled. Applying it again here inverted both axes.
+        # when it was sampled.
         navpose_dict['yaw_deg'] = pan_deg
         navpose_dict['pitch_deg'] = tilt_deg
         return navpose_dict
@@ -463,7 +465,7 @@ class ServosPTXNode:
         # The servo lists change at runtime as SVX devices come and go, and each axis'
         # list excludes the other axis' selection, so this re-reads the selections,
         # lists and connected flags from the connect interfaces and rebuilds the options
-        # as well as the values. Reading them only on the 1 s connects cycle left the
+        # as well as the values. Reading them only on the 1 s connects cycle would leave the
         # dict setSettingFunction returns offering the servo just taken by one axis to
         # the other. Both selections are read before either list is built, so each list
         # excludes the other axis' current selection rather than last cycle's.
@@ -603,8 +605,6 @@ class ServosPTXNode:
     def movePan(self, direction, duration):
         if self.pan_connect_if is not None:
             # Normalize and apply the axis direction the same way movePanSpeedRatio does.
-            # Passing the caller's direction straight through made the two jog paths
-            # disagree on sign, so a jog reversed when a speed was supplied.
             direction = self.PT_DIRECTION_POSITIVE if direction == 1 else self.PT_DIRECTION_NEGATIVE
             direction = direction * self.PAN_DEG_DIR
             success = self.pan_connect_if.move_direction(direction)
@@ -652,8 +652,7 @@ class ServosPTXNode:
     def setSoftLimits(self, min_pan,max_pan,min_tilt,max_tilt):
         # Stored in the node frame, the frame the caller and getSoftLimits() both use.
         # The SVX device has no soft-limit command, so there is nothing to push down and
-        # nothing to convert; the earlier axis-direction swap here only mattered for a
-        # driver-side write that never existed.
+        # nothing to convert.
         if (min_pan < max_pan) and (min_tilt < max_tilt):
             self.soft_limits = [min_pan, max_pan, min_tilt, max_tilt]
 
@@ -690,10 +689,7 @@ class ServosPTXNode:
         return max_speed_dps
 
     def setSpeedMax(self, speed):
-        # The old guard silently dropped anything outside 10-40 dps, which is well under
-        # what a standard hobby servo does (a 3001HB is roughly 315-400 dps), so a correct
-        # max could never be set and the axis was capped at a fraction of the hardware.
-        # Out-of-range values are now reported instead of vanishing.
+        # Out-of-range values are reported.
         if speed < self.MIN_SPEED_MAX_DPS or speed > self.MAX_SPEED_MAX_DPS:
             self.msg_if.pub_warn("Max speed " + str(speed) + " dps outside supported range " +
                                  str(self.MIN_SPEED_MAX_DPS) + "-" + str(self.MAX_SPEED_MAX_DPS) +
@@ -710,8 +706,7 @@ class ServosPTXNode:
 
 
     def setPanSpeedRatio(self, ratio):
-        # A 0-1 ratio, not degrees per second. Sending it to set_max_speed_dps() set the
-        # servo maximum to a fraction of a degree per second instead of scaling the speed.
+        # A 0-1 ratio, not degrees per second.
         if self.pan_connect_if is not None and self.pan_connected == True:
             self.pan_connect_if.set_max_speed_ratio(ratio)
         self.speed_ratio = ratio

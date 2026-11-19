@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License",
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 # SVX (servo) discovery for the Pololu Micro Maestro USB servo controller.
 #
@@ -389,8 +391,7 @@ class SvxServoMaestroDiscovery:
         # Make sure the board is in the serial mode the serial_mode option asks for,
         # switching it if not. Re-checked every MODE_CHECK_INTERVAL_SEC, or at once
         # when the option changes. Best-effort: when the mode cannot be read the
-        # nodes are still launched, which is exactly what happened before this
-        # check existed, and the reason is logged.
+        # nodes are still launched, and the reason is logged.
         path_str = port_info['path']
         # Keyed by serial number too, so a different board appearing on the same
         # port is checked straight away rather than riding the old board's result.

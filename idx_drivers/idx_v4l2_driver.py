@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 
 import sys, subprocess
@@ -139,7 +141,7 @@ class V4l2CamDriver(object):
             try:
               int_val = int(value)
               # Compare the parsed int, not the raw string: '1' == 1 is never
-              # true, so every bool control used to read back as False.
+              # true.
               a[key] = True if int_val == 1 else False
             except:
               a[key] = value
@@ -247,9 +249,7 @@ class V4l2CamDriver(object):
     if not setting_name in self.camera_controls:
       return False, "Unavailable setting: " + setting_name
     # Normalize to the int v4l2-ctl takes and getCameraControl reads back. Values
-    # arrive from the settings IF as strings or ints ('1' for a menu), and the
-    # readback check compared them raw, so a control that DID update was
-    # reported as "did not update from 1 to 1".
+    # arrive from the settings IF as strings or ints ('1' for a menu).
     control = self.camera_controls[setting_name]
     try:
       if control['type'] == 'bool':

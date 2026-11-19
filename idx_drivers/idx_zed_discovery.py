@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 
 import os
@@ -152,8 +154,8 @@ class ZedCamDiscovery:
 
     if 'navpose_enabled' in self.drv_dict['DISCOVERY_DICT']['OPTIONS'].keys():
       # drivers_mgr stores a Toggle option as a real bool (nepi_controls normalizes
-      # it), so comparing to the string 'True' alone was always False and the
-      # ZED's NPX navpose could never be enabled. Accept either form.
+      # it), so comparing to the string 'True' alone is always False.
+      # Accept either form.
       navpose_enabled = self.drv_dict['DISCOVERY_DICT']['OPTIONS']['navpose_enabled']['value']
       self.navpose_enabled = (navpose_enabled == True or navpose_enabled == 'True' or navpose_enabled == 'true')
 
@@ -360,8 +362,7 @@ class ZedCamDiscovery:
     self.msg_if.pub_info("stopping " + node_namespace)
     purge_paths = []
     # Snapshot the keys only: each entry holds the node's subprocess.Popen,
-    # whose internal lock cannot be deepcopied, so a deepcopy here raised
-    # TypeError and the cleanup exited without killing any device node.
+    # whose internal lock cannot be deepcopied.
     for path_str in list(self.device_dict.keys()):
       device = self.device_dict[path_str]
       namespace = device['node_namespace']

@@ -2,10 +2,11 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License",
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
 # Redistributions in source code must retain this top-level comment block.
@@ -614,7 +615,7 @@ class PX4Node:
     # Deep copy, not a bare reference: SettingsIF keeps whatever this returns
     # and mutates its entries in place, which would otherwise land on this
     # node's own live settings_dict (see the matching comment in
-    # rbx_ardupilot_node.py for the failure that caused).
+    # rbx_ardupilot_node.py).
     return copy.deepcopy(self.settings_dict)
 
   def setSettingFunction(self, setting_name, setting_value):
@@ -809,7 +810,7 @@ class PX4Node:
   # Motor Servo (SVX) Functions
   # Every motor is its own DeviceSVXIF (a spin servo) on the RUI Servo page.
   # Each callback acts on one motor through setMotorControlRatio above, so the
-  # PX4 actuator test path is unchanged: its checks (index range, 0-1 clamp,
+  # PX4 actuator test path is shared: its checks (index range, 0-1 clamp,
   # motor_test_max_throttle_percent), the motor_lock, the MOTOR_TEST_REFRESH_SEC
   # resend and motor_test_timeout_s release in motorTestRefreshCb, and the
   # rejection report all still apply. PX4 refuses an actuator test while armed
@@ -859,7 +860,6 @@ class PX4Node:
     self.setMotorControlRatio(motor_ind, 0.0)
 
   def runMotorSvx(self, motor_ind, signed_ratio):
-    # Same gate the RBX interface applied to set_motor_control before 3.4
     if self.motor_svx_cmds_enabled == False:
       return False
     if self.manualControlsReady() != True:
@@ -966,7 +966,7 @@ class PX4Node:
                                                geopoint_amsl.latitude, geopoint_amsl.longitude,
                                                geopoint_amsl.altitude)
     [x_m, y_m, z_m, yaw_rad] = self.getCurrentPose()
-    # 3.4 RBXRobotIF passes ENU orientation, so the yaw is used as is.
+    # RBXRobotIF passes ENU orientation, so the yaw is used as is.
     yaw_enu_deg = orientation_enu_deg[2]
     self.setHoldTarget(x_m + east_m, y_m + north_m, z_m + up_m, math.radians(yaw_enu_deg))
     return True
@@ -1199,7 +1199,7 @@ class PX4Node:
       # rpy[2] directly, no convert_yaw_ned2enu: mavros publishes this
       # quaternion already in ENU, so reflecting it as a NED heading would put
       # yaw and x/y in different frames (see rbx_ardupilot_node.py's
-      # odom_topic_callback for the bug that caused). It is also the frame the
+      # odom_topic_callback). It is also the frame the
       # setpoint stream's yaw is written in.
       self.navpose_dict['yaw_deg'] = rpy[2]
 
@@ -1585,8 +1585,7 @@ class PX4Node:
         alt_error = (goal_alt - self.navpose_dict['z_m'])
       # Success is decided by whether the vehicle actually REACHED the
       # altitude, not by whether it got there before the timeout (see
-      # rbx_ardupilot_node.py's takeoff_action for the failure the timing
-      # test caused).
+      # rbx_ardupilot_node.py's takeoff_action).
       reached_altitude = abs(alt_error) <= error_bound_m
       if reached_altitude:
         cmd_success = True

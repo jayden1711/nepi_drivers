@@ -2,9 +2,19 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# Copyright (c) 2024 Numurus <https://www.numurus.com>.
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
+# which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
+#
+# Redistributions in source code must retain this top-level comment block.
+# Plagiarizing this software to sidestep the license obligations is illegal.
+#
+# Contact Information:
+# ====================
+# - mailto:nepi@numurus.com
 #
 
 import os
@@ -127,11 +137,7 @@ class ZedCamNode(object):
     zed_pose = None
 
     # Shared single-grab state. All three data-product threads (color/depth/
-    # pointcloud) drive the SAME camera handle. Previously each thread called
-    # self.zed.grab() independently, which (a) contended on the non-thread-safe
-    # handle and (b) consumed a separate frame per product, so the collective
-    # throughput was capped near cam_fps/num_products and the slowest product
-    # (pointcloud) was starved to ~1 Hz. _grabSharedFrame() performs at most one
+    # pointcloud) drive the SAME camera handle. _grabSharedFrame() performs at most one
     # grab per frame period under zed_grab_lock; all products then retrieve from
     # that same frame, so each can run up to the camera framerate.
     zed_grab_lock = threading.Lock()
@@ -201,9 +207,7 @@ class ZedCamNode(object):
     data_products = []
 
     max_framerate = 100
-    # Pointcloud rate cap. Previously hard-defaulted to 1 Hz, which throttled the
-    # pointcloud ~15x below the camera fps even though depth (same grab+retrieve
-    # path) ran at full rate. Overridden to the camera framerate in __init__ so the
+    # Pointcloud rate cap. Overridden to the camera framerate in __init__ so the
     # pointcloud defaults to the same full-speed behavior as color/depth. grab()
     # blocks at the camera fps, so this can never over-grab the hardware.
     max_pointcloud_framerate = 30
@@ -329,7 +333,7 @@ class ZedCamNode(object):
         init_params.camera_fps = self.framerate #30  # Set fps at 30
         # Use the ROS coordinate system (X forward, Y left, Z up). NEPI's pointcloud
         # render camera + rotate/tilt/zoom controls are built for X-fwd/Z-up; Y-up
-        # here rendered the cloud side-on and rolled 90 deg.
+        # here would render the cloud side-on and rolled 90 deg.
         init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP_X_FWD
         init_params.coordinate_units = sl.UNIT.METER  # NEPI range/clip/render pipeline is meters-based
 
@@ -398,8 +402,8 @@ class ZedCamNode(object):
         self.current_fps = self.framerate # Should be updateded when settings read
 
         # Default the pointcloud rate cap to the camera framerate so the pointcloud
-        # runs as fast as the hardware/pipeline allow (matching color/depth), instead
-        # of the old fixed 1 Hz. Set before initSettingsDict() below so the
+        # runs as fast as the hardware/pipeline allow (matching color/depth).
+        # Set before initSettingsDict() below so the
         # pointcloud_max_rate factory/default value reflects the full camera rate. Users
         # can still throttle it at runtime via the pointcloud_max_rate setting.
         self.max_pointcloud_framerate = self.framerate
@@ -672,8 +676,7 @@ class ZedCamNode(object):
 
     def getNavPoseDict(self):
         # Orientation and position both come from ONE grab and ONE get_position
-        # (getZedPose), so they always describe the same frame. They used to be
-        # read by two separate grabs.
+        # (getZedPose), so they always describe the same frame.
         [rpy, xyz] = self.getZedPose()
         if rpy is None or xyz is None:
             return None
@@ -690,7 +693,6 @@ class ZedCamNode(object):
         # Position in METERS (init_params.coordinate_units is sl.UNIT.METER), in the
         # camera's x forward / y left / z up frame, relative to where the camera was
         # at the first good tracking sample after navpose started (see getZedPose).
-        # It was multiplied by 1000, so a few centimeters of motion read as tens.
         navpose_dict['x_m'] = xyz[0]
         navpose_dict['y_m'] = xyz[1]
         navpose_dict['z_m'] = xyz[2]
@@ -707,7 +709,7 @@ class ZedCamNode(object):
         # Returns [rpy_deg, xyz_m] for the latest grab, or [None, None] when there is
         # no grab or positional tracking is not OK. get_position() returns the
         # tracking state, and a pose taken while it is SEARCHING, FPS_TOO_LOW or OFF
-        # is not a measurement; it used to be published as one.
+        # is not a measurement.
         pose = sl.Pose()
         state = None
         # Route pose grabs through the shared lock so the navpose path does not
@@ -727,11 +729,7 @@ class ZedCamNode(object):
 
         # The camera runs in RIGHT_HANDED_Z_UP_X_FWD (x forward, y left, z up), the
         # same frame NEPI's ENU navpose uses, so the pose quaternion converts with
-        # nepi_nav's own tf (static xyz) Euler order, as npx_microstrain does. The old
-        # get_euler_angles() index mapping and sign flips were written for the ZED's
-        # default image frame (y down, z forward) and were never updated when the
-        # coordinate system changed, so "roll" was really yaw, "pitch" was roll and
-        # "yaw" was pitch (rounded to whole degrees, so it read 0).
+        # nepi_nav's own tf (static xyz) Euler order, as npx_microstrain does.
         quat = pose.get_orientation().get() # [ox, oy, oz, ow]
         rpy_deg = nepi_nav.convert_quat2rpy([quat[0], quat[1], quat[2], quat[3]])
         rpy = [round(float(rpy_deg[0]), 3), round(float(rpy_deg[1]), 3), round(float(rpy_deg[2]), 3)]
@@ -777,7 +775,7 @@ class ZedCamNode(object):
         if rate < 1:
             rate = 1
         # Allow up to 30 Hz (the max selectable camera framerate in idx_zed_params.yaml).
-        # The old ceiling of 10 held the pointcloud below the camera fps. grab() blocks
+        # grab() blocks
         # at the actual camera fps, so a value above the running fps simply tracks it.
         if rate > 30:
             rate = 30

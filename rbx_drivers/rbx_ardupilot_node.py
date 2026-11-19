@@ -2,10 +2,11 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_apps) repo
-# (see https://https://github.com/nepi-engine/nepi_apps)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
 # Redistributions in source code must retain this top-level comment block.
@@ -66,8 +67,7 @@ FILE_TYPE = 'NODE'
 
 # Nav Sim GPS instance command topics, relative to the instance namespace
 # (<base>/app_nav_sim/gps_instances/<name>), keyed by this driver's command
-# names. They are nav_sim's programmatic API for the GPS kind, carried over
-# from the retired Fake GPS app.
+# names. They are nav_sim's programmatic API for the GPS kind.
 FAKE_GPS_STATUS_MSG = 'NepiAppGpsSimStatus'
 FAKE_GPS_CMD_TOPICS = {
   'enable':        ('set_gps_enabled', Bool),
@@ -87,21 +87,21 @@ FAKE_GPS_TARGET_UPDATE_SEC = 2.0
 class CameraBridgeDeviceRelay:
   """Device-side half of a plain TCP relay for the camera bridge port --
   see ArdupilotNode.__init__'s own comment (right where this gets started)
-  for the full root-cause writeup, and rbx_ardupilot_discovery.py's
-  SitlMavlinkRelay for the identically-shaped fix already proven live for
+  for why it exists, and rbx_ardupilot_discovery.py's
+  SitlMavlinkRelay for the identically-shaped relay for
   the MAVLink port. Listens on DEVICE_LISTEN_PORT for
   camera_bridge_relay_vm.py to dial in (VM dials device, same direction
   every other bridge in this app uses), and re-exposes whatever it
   forwards as a plain local TCP server on 127.0.0.1:CAMERA_LOCAL_PORT --
   exactly the address ArdupilotNode.CAMERA_BRIDGE_HOST/PORT already
-  expects, so cameraBridgeLoop needed no changes at all.
+  expects.
 
   One VM connection and one local (this node's own cameraBridgeLoop)
   connection relayed at a time -- ArdupilotNode only ever opens one camera
   bridge client connection, so no probe-vs-real-connection contention like
   SitlMavlinkRelay has to handle; the exclusivity lock and "only tear down
-  vm_conn on a genuine vm-side failure" logic are kept anyway, both because
-  they're already correct and proven, and because a stale local connection
+  vm_conn on a genuine vm-side failure" logic are kept anyway, because
+  a stale local connection
   lingering during a reconnect could otherwise still race a fresh one.
   """
   DEVICE_LISTEN_PORT = 9032
@@ -218,8 +218,7 @@ class CameraBridgeDeviceRelay:
   def _pump(a, b):
     # Returns True only if `b` (vm_conn) is the side that actually failed --
     # see SitlMavlinkRelay._pump's own comment for why this distinction
-    # matters (conflating "local side closed" with "vm_conn is dead" was
-    # the real bug that took several iterations to find there).
+    # matters.
     a.setblocking(False)
     b.setblocking(False)
     while True:
@@ -249,37 +248,26 @@ class DeviceSideRelay:
   device_listen_port for a VM-side "..._relay_vm.py" script to dial in, and
   re-exposes whatever it forwards as a local TCP server on
   127.0.0.1:local_port, exactly the address this driver's own code (or a
-  sample script's) already expects -- so that code needs zero changes.
-  Mirrors CameraBridgeDeviceRelay/SitlMavlinkRelay's already-proven shape
+  sample script's) already expects.
+  Mirrors CameraBridgeDeviceRelay/SitlMavlinkRelay's shape
   (VM dials device, never the device blindly dialing its own loopback and
   hoping a reverse SSH tunnel is forwarding it). Generalized into one
   parameterized class here, unlike those two hand-written copies, since a
   third and fourth near-identical ~90-line class for RESET_SIM/TEARDOWN/
-  START_TRIGGER was worse than one class instantiated three times.
-
-  Found live 2026-09-15: RESET_SIM (rbx_ardupilot_node.py's own reset_sim())
-  and the follow-mission script's own TEARDOWN/START_TRIGGER connections
-  still dialed 127.0.0.1:<port> assuming a reverse SSH tunnel would forward
-  it -- unlike MAVLink and the camera bridge, which were already fixed to
-  this same VM-dials-device pattern back on 2026-09-08. Reported live: "hit
-  stop on the script, but the chair keeps moving... reset sim doesn't work
-  either... why not just use the same thing the rover uses to reset" -- the
-  rover's own fix (rbx_sim_node.py's bridgeLoop) is this exact pattern; the
-  quadcopter driver had it for MAVLink/camera already but never extended it
-  to these three one-shot control signals.
+  START_TRIGGER would be worse than one class instantiated three times.
 
   UNLIKE the continuous MAVLink/camera streams, RESET_SIM/TEARDOWN/
   START_TRIGGER's real VM-side services (gz_reset_listener.py, and
   ai_targeting_controller_ardupilot.py's teardown/start-trigger listeners)
   are one-shot: the mere act of a client connecting IS the whole request --
   neither side ever sends a payload (reset_sim() itself only connects and
-  reads a reply; see that method's own body). A first cut of this class
-  simply pumped raw bytes between local_conn and vm_conn like the
-  continuous relays do, which meant the VM-side relay script's own
-  reconnect loop re-dialed the real local service every ~2s regardless of
-  whether anything had actually asked for it -- confirmed live, resetting
-  the sim's pose on a timer with nobody pressing Reset Sim. Fixed by having
-  _relayLocalConn send an explicit TRIGGER_MARKER over vm_conn the instant
+  reads a reply; see that method's own body). Simply pumping raw bytes
+  between local_conn and vm_conn like the
+  continuous relays do would let the VM-side relay script's own
+  reconnect loop re-dial the real local service every ~2s regardless of
+  whether anything had actually asked for it, resetting
+  the sim's pose on a timer with nobody pressing Reset Sim. Instead
+  _relayLocalConn sends an explicit TRIGGER_MARKER over vm_conn the instant
   (and only when) a genuine local connection lands, so the VM-side script
   can wait for that marker and dial its own real local service lazily, on
   demand, instead of speculatively.
@@ -438,8 +426,8 @@ RESET_SIM_DEVICE_RELAY = DeviceSideRelay("ResetSimDeviceRelay", device_listen_po
 TEARDOWN_DEVICE_RELAY = DeviceSideRelay("TeardownDeviceRelay", device_listen_port=9035, local_port=9029)
 # local_port=9037, NOT 9030 -- see drone_follow_object_mission_script.py's
 # own SIM_START_PORT comment: 9030 on THIS device collides with
-# sim_connector_app_node.py's unrelated FACTORY_LISTEN_PORT. Only this
-# device-local leg moved; ai_targeting_controller_ardupilot.py still listens
+# sim_connector_app_node.py's unrelated FACTORY_LISTEN_PORT.
+# ai_targeting_controller_ardupilot.py listens
 # on 9030 on the VM.
 START_TRIGGER_DEVICE_RELAY = DeviceSideRelay("StartTriggerDeviceRelay", device_listen_port=9036, local_port=9037)
 
@@ -456,27 +444,16 @@ class ArdupilotNode:
   # two body-frame offset triples, one per always-live camera (robot/scene
   # view), following the exact same live CAP_SETTINGS/FACTORY_SETTINGS
   # pattern as rbx_sim_node.py's own camera settings -- no new mechanism.
-  # No camera_view_mode any more (2026-08-18): both views used to be one
-  # topic switched by this Setting, teleporting the SAME single Gazebo
-  # camera model between two poses -- reworked so both are separate,
+  # Both views are separate,
   # always-live Gazebo models (camera_rig_controller_ardupilot.py) and
   # separate ROS Image topics (see image_pub_robot_color/image_pub_scene_color
-  # below), after a live report that a single reassignable topic and a
-  # single teleported camera model meant the "third-person view" wasn't
-  # really an independent thing a client could rely on. Further expanded
-  # 2026-08-20: each of the two views now always publishes two simultaneous
-  # topics (color, colorized-depth-view) instead of switching between color
-  # and depth via a depth_map_enabled toggle -- see CAMERA_PUB_ATTR below. A
-  # raw robot_depth_map/scene_depth_map pair existed briefly alongside these
-  # but was removed entirely (2026-09-14, requested live: "unness and dont
-  # do anything") -- no processing-pipeline consumer ever existed for it.
-  # camera_fov_deg added (2026-09-09, requested live: "changing the fov
-  # values still doesnt seem to do anything for the drone") -- same shared-
+  # below). Each of the two views always publishes two simultaneous
+  # topics (color, colorized-depth-view) -- see CAMERA_PUB_ATTR below.
+  # camera_fov_deg is the same shared-
   # horizontal-FOV, respawn-on-change Setting as rbx_sim_node.py's own
-  # camera_fov_deg (see that file's own comment), now that
+  # camera_fov_deg (see that file's own comment);
   # camera_rig_controller_ardupilot.py has a respawn path for it (see that
-  # file's own FACTORY_CAMERA_FOV_DEG comment). Previously this driver had
-  # no such Setting at all -- a genuinely missing feature, not a bug.
+  # file's own FACTORY_CAMERA_FOV_DEG comment).
   CAMERA_SETTING_NAMES = ("camera_offset_x", "camera_offset_y", "camera_offset_z",
                           "scene_offset_x", "scene_offset_y", "scene_offset_z",
                           "camera_fov_deg")
@@ -489,13 +466,11 @@ class ArdupilotNode:
   # quadcopter.py's own copy of this concept was never wired to anything
   # (its own "environment_option" handler was a no-op stub) and
   # camera_rig_controller_ardupilot.py already owns a working, SITL-scoped
-  # JSON channel to the VM. Added 2026-09-08, requested live: "changing the
-  # environment also doesnt do anything" -- has_environment_controls being
-  # false for this driver's own flight_robot_4_motor profile only ever
-  # meant the OTHER (toggle-buttons) environment UI never renders; the
+  # JSON channel to the VM. has_environment_controls being
+  # false for this driver's own flight_robot_4_motor profile only
+  # means the OTHER (toggle-buttons) environment UI never renders; the
   # dropdown-driven live Setting this app's own Sim Connector RUI uses is
-  # unconditional and was reaching this driver's setSettingFunction the
-  # whole time -- just landing on an unsupported/no-op setting name.
+  # unconditional and reaches this driver's setSettingFunction.
   ENVIRONMENT_SETTING_NAMES = ("environment",)
   # Populated dynamically from the VM's own "environment_options" line (see
   # processCameraBridgeLine) -- starts with only the one value that's
@@ -505,16 +480,15 @@ class ArdupilotNode:
   # Sim Connector "customize the capabilities that are open" toggles -- same
   # mechanism and same three names as rbx_sim_node.py's own
   # CAPABILITY_SETTING_NAMES (see that file's comment for the full reasoning).
-  # Added here for parity: the quadcopter's robot config (flight_robot_4_motor)
+  # The quadcopter's robot config (flight_robot_4_motor)
   # is exactly as much a Sim Connector-managed simulated robot as the rover's,
   # so it gets the same three configuration toggles, not a lesser set.
-  # enabled_image_sources added for parity with rbx_sim_node.py's own
+  # enabled_image_sources matches rbx_sim_node.py's own
   # curation checklist Setting (NepiDeviceRBX.js's Image Source dropdown /
-  # Nepi_IF_Sim-Controls.js's renderImageSourceCuration) -- was missing here
-  # entirely, which meant that whole enable/disable-cameras UI section never
-  # rendered for this driver at all (its gate is
-  # rbxSettingsNamesList.includes("enabled_image_sources")), including the
-  # physical camera candidate the curation list would otherwise have shown.
+  # Nepi_IF_Sim-Controls.js's renderImageSourceCuration); the
+  # enable/disable-cameras UI section renders only for a driver that has it
+  # (its gate is
+  # rbxSettingsNamesList.includes("enabled_image_sources")).
   CAPABILITY_SETTING_NAMES = ("autonomous_movement_enabled", "teleop_movement_enabled",
                               "camera_controls_enabled", "enabled_image_sources",
                               "move_with_manual_enabled")
@@ -558,7 +532,7 @@ class ArdupilotNode:
     motor_count = {"type":"Int","name":"motor_count","value":"4"},
     motor_test_max_throttle_percent = {"type":"Float","name":"motor_test_max_throttle_percent","value":"20"},
     motor_test_timeout_s = {"type":"Float","name":"motor_test_timeout_s","value":"30"},
-    # Delta-from-mount-point convention (2026-09-08, see
+    # Delta-from-mount-point convention (see
     # camera_rig_controller_ardupilot.py's own FACTORY_OFFSET_X/Y/Z comment
     # for the full writeup) -- these are always 0.0 here, matching the
     # rover's own camera_offset_x/y/z FACTORY_SETTINGS, since the real
@@ -573,15 +547,14 @@ class ArdupilotNode:
     scene_offset_y = {"type":"Float","name":"scene_offset_y","value":"0.0"},
     scene_offset_z = {"type":"Float","name":"scene_offset_z","value":"0.0"},
     camera_fov_deg = {"type":"Float","name":"camera_fov_deg","value":str(FACTORY_CAMERA_FOV_DEG)},
-    # All default to enabled: a robot config that never touches these
-    # settings behaves exactly as it did before this feature existed.
+    # All default to enabled.
     autonomous_movement_enabled = {"type":"Discrete","name":"autonomous_movement_enabled","value":"TRUE"},
     teleop_movement_enabled = {"type":"Discrete","name":"teleop_movement_enabled","value":"TRUE"},
     camera_controls_enabled = {"type":"Discrete","name":"camera_controls_enabled","value":"TRUE"},
     # Defaults FALSE here (unlike the other three, which default TRUE) --
     # this driver's manual motor control (MAV_CMD_DO_MOTOR_TEST, see
-    # setMotorControlRatio) never produced real flight before this Setting
-    # existed, so FALSE preserves that exact prior behavior for anyone who
+    # setMotorControlRatio) does not produce real flight, so FALSE matches
+    # that for anyone who
     # never touches this toggle. rbx_sim_node.py's own copy of this Setting
     # defaults TRUE for the opposite reason -- see that file's comment.
     move_with_manual_enabled = {"type":"Discrete","name":"move_with_manual_enabled","value":"FALSE"},
@@ -594,8 +567,8 @@ class ArdupilotNode:
 
   FACTORY_SETTINGS_OVERRIDES = dict()
 
-  # Camera-rig bridge (see camera_rig_controller_ardupilot.py and the
-  # session summary for the full design). Fixed constants, not sourced from
+  # Camera-rig bridge (see camera_rig_controller_ardupilot.py for the
+  # full design). Fixed constants, not sourced from
   # DEVICE_DICT: unlike the rover's per-slot rbx_sim driver, ArduPilot SITL
   # is single-instance-only on this dev VM, so there is exactly one bridge
   # endpoint, matching how RESET_SIM_HOST/RESET_SIM_PORT are also fixed
@@ -605,14 +578,12 @@ class ArdupilotNode:
   CAMERA_RECONNECT_INTERVAL_SEC = 3.0
   CAMERA_SOCKET_TIMEOUT_SEC = 5.0
 
-  # Watchdog for a live-observed wedge: the bridge socket can stay
-  # ESTABLISHED and keep accepting bytes at the TCP layer (confirmed via
-  # `ss` byte counters climbing normally) while the recv/parse loop above it
+  # Watchdog for a wedge: the bridge socket can stay
+  # ESTABLISHED and keep accepting bytes at the TCP layer (`ss` byte
+  # counters climb normally) while the recv/parse loop above it
   # never advances -- no frame ever reaches processCameraImageLine, camera
-  # topics sit at 0 Hz indefinitely, and only a full node restart recovered
-  # it (reported live as "the drone camera takes forever to show up" /
-  # "the scene camera doesn't even exist" -- the exact case that motivated
-  # this). The precise wedge mechanism wasn't pinned down (bytes were
+  # topics sit at 0 Hz indefinitely, and only a full node restart recovers
+  # it. The precise wedge mechanism wasn't pinned down (bytes were
   # provably arriving, so it isn't a dead/blocked recv()), so this doesn't
   # try to fix that mechanism directly -- it just notices "no frame has
   # gone out in far longer than the ~14 fps (2 cameras x 7 Hz) bridge should
@@ -637,8 +608,8 @@ class ArdupilotNode:
   # (see __init__): a SITL instance runs on a dev rig that can have an
   # unrelated physical camera plugged in (e.g. a USB webcam used for other
   # testing), and this substring match has no way to tell that apart from a
-  # genuine onboard camera -- confirmed live hijacking robot_color away from
-  # the sim bridge's own camera_rig feed the moment any such camera existed
+  # genuine onboard camera, so it would hijack robot_color away from
+  # the sim bridge's own camera_rig feed the moment any such camera exists
   # on the device. Real hardware has no such ambiguity.
   REAL_CAMERA_TOPIC_PATTERN = "idx/color_image"
   REAL_CAMERA_WATCH_INTERVAL_SEC = 3.0
@@ -651,10 +622,9 @@ class ArdupilotNode:
 
   RBX_STATES = ["DISARM","ARM"]
   RBX_MODES = ["STABILIZE","LAND","RTL","LOITER","GUIDED","RESUME"]
-  # FORCE_DISARM requested live 2026-09-16: a plain DISARM (set_state) is
+  # FORCE_DISARM: a plain DISARM (set_state) is
   # correctly REFUSED by ArduPilot's own mid-air safety interlock while the
-  # vehicle is genuinely airborne -- reported live as "gazebo one still
-  # continues to fly" after sending disarm while linked, because that's
+  # vehicle is genuinely airborne, because that's
   # exactly what real ArduCopter is supposed to do with a bare disarm
   # request in flight. RESET_SIM already force-disarms as its own last step
   # (see reset_sim()), but only after first attempting a Gazebo-only pose
@@ -687,16 +657,16 @@ class ArdupilotNode:
   # TARGET_LOCAL_NED handling treats a stream slower than roughly 2Hz as
   # stale and reverts to loiter, so 20Hz has wide margin. Conservative,
   # fixed caps rather than a Setting (unlike rbx_sim_node.py's
-  # max_linear_speed_mps): this is new, unverified-in-flight code, and a
+  # max_linear_speed_mps): this is unverified-in-flight code, and a
   # hard ceiling here is a real safety margin, not just a default.
   TELEOP_PUBLISH_RATE_HZ = 20
   TELEOP_CMD_TIMEOUT_SEC = 0.75
-  # Confirmed live 2026-08-13: stopping the setpoint stream outright (no
+  # Stopping the setpoint stream outright (no
   # further publishes at all) the instant TELEOP_CMD_TIMEOUT_SEC elapses is
   # NOT the same as stopping the vehicle -- ArduCopter's own GUIDED-mode
   # velocity controller keeps flying at the LAST commanded velocity until ITS
   # OWN internal setpoint-timeout expires (empirically a few seconds, not
-  # governed by anything this driver controls), so the vehicle visibly kept
+  # governed by anything this driver controls), so the vehicle would keep
   # drifting for several seconds after this driver had already gone silent.
   # This grace window closes that gap: once idle, publish an EXPLICIT
   # (0,0,0,0) for TELEOP_STOP_GRACE_SEC more before actually going silent, so
@@ -864,9 +834,9 @@ class ArdupilotNode:
         # device_path is connection_type + "_" + address (see discoveryFunction) --
         # a SITL connection is always "SITL_<addr>_<port>", every real connection
         # type (SERIAL/USB/TCP/UDP to an actual FCU) is not. Computed once here,
-        # instance-wide, since it now gates three independent things: the
+        # instance-wide, since it gates three independent things: the
         # data_source_description passed to RBXRobotIF below, the real-camera
-        # relay thread further down, and the existing Fake GPS reconcile logic.
+        # relay thread further down, and the Fake GPS reconcile logic.
         self.is_sitl = str(self.device_path).upper().startswith("SITL")
     except Exception as e:
         self.msg_if.pub_warn("Failed to load Device Dict " + str(e))
@@ -917,11 +887,11 @@ class ArdupilotNode:
     # connect_service's bare rospy.ServiceProxy, which never checks the ROS
     # graph) matters because mavros's state TOPIC above starts flowing
     # before its service servers finish registering -- a Launch/Arm/Takeoff
-    # click landing in that gap called call_service against a not-yet-live
+    # click landing in that gap would call call_service against a not-yet-live
     # service, which fails silently (nepi_sdk.call_service logs failures at
     # DEBUG only) and just retries every check_interval_s for the entire
-    # cmd_timeout before anything is ever shown in the RUI. Waiting here
-    # instead, before this node reports Initialization Complete, closes
+    # cmd_timeout before anything is ever shown in the RUI. Waiting here,
+    # before this node reports Initialization Complete, closes
     # that window at startup rather than on whichever command happens to be
     # the first one clicked.
     self.msg_if.pub_info("Waiting for mavlink services under: " + MAVLINK_NAMESPACE)
@@ -951,8 +921,8 @@ class ArdupilotNode:
     # permanently stale, silently breaking every altitude/position-based
     # completion check (takeoff climb, goto_location/goto_position) with a
     # timeout that looks like the vehicle never moved, even when it did.
-    # STREAM_ALL (stream_id=0) at 10Hz mirrors the working manual fix confirmed
-    # in SITL testing (rosservice call .../set_stream_rate).
+    # STREAM_ALL (stream_id=0) at 10Hz mirrors the manual equivalent
+    # (rosservice call .../set_stream_rate).
     self.msg_if.pub_info("Requesting full MAVLink telemetry stream (STREAM_ALL @ 10Hz)")
     stream_rate_req = StreamRateRequest()
     stream_rate_req.stream_id = 0
@@ -1000,21 +970,18 @@ class ArdupilotNode:
     # name that RBXRobotIF's find_topic()-based image subscriber is pointed
     # at via set_image_topic (see below). ArduPilot SITL is single-instance
     # on this device (no second rbx_ardupilot node can ever coexist), so
-    # there is no cross-talk risk from another instance of THIS driver --
-    # confirmed rather than assumed, since the rover's camera-rover-multi
-    # phase found a real bug here (two rbx_sim instances' bare
-    # "color_2d_image" colliding on the shared device-wide namespace, per
-    # nepi_drvs.launchDriverNode only remapping __name, never __ns). This
-    # driver still qualifies its topic with its own device_name, matching
-    # rbx_sim_node.py's fix, as defense against the same shared-namespace
+    # there is no cross-talk risk from another instance of THIS driver.
+    # nepi_drvs.launchDriverNode only remaps __name, never __ns, so a bare
+    # "color_2d_image" shares one device-wide namespace. This
+    # driver qualifies its topic with its own device_name, matching
+    # rbx_sim_node.py, as defense against that shared namespace
     # colliding with a DIFFERENT RBX driver (e.g. rbx_sim) that might be
     # running on this same device and left at RBXRobotIF's bare
     # "color_2d_image" factory default.
     # Four always-live topics (color/depth-view x robot/scene), not one bare
-    # topic -- see CAMERA_SETTING_NAMES's own comment for why, and
-    # rbx_sim_node.py's matching comment for the full 2026-08-20 redesign
-    # (superseding the old depth_map_enabled toggle with simultaneous
-    # publishing on all four). A real onboard camera (REAL_CAMERA_TOPIC_PATTERN
+    # topic -- see CAMERA_SETTING_NAMES's own comment and
+    # rbx_sim_node.py's matching comment for why.
+    # A real onboard camera (REAL_CAMERA_TOPIC_PATTERN
     # below) only ever feeds robot_color -- a real airframe has no chase-cam
     # concept and no depth stream, so scene_color/robot_depth/scene_depth
     # simply stay idle (topics exist, nothing ever publishes to them) on
@@ -1050,15 +1017,9 @@ class ArdupilotNode:
     self.camera_last_frame_time = 0.0
     # Device-side half of a plain TCP relay making camera_rig_controller_
     # ardupilot.py's own bridge server (127.0.0.1:9026 on the VM) reachable
-    # at 127.0.0.1:9026 on THIS device again, without a reverse SSH tunnel --
-    # same root cause and same fix shape as SitlMavlinkRelay
-    # (rbx_ardupilot_discovery.py) for the MAVLink port: confirmed live
-    # (2026-09-08) that port 9026 was flatly refused from this device
-    # (`Connection refused`), meaning cameraBridgeLoop below had never once
-    # actually connected since the reverse-SSH-tunnel setup was replaced
-    # with every bridge dialing OUT from the VM to the device instead -- no
-    # image data (or, once added, environment commands) could ever have
-    # reached this node regardless of anything else. See
+    # at 127.0.0.1:9026 on THIS device, since every bridge dials OUT from the
+    # VM to the device -- same shape as SitlMavlinkRelay
+    # (rbx_ardupilot_discovery.py) for the MAVLink port. See
     # camera_bridge_relay_vm.py (VM side, dials into the real
     # camera_rig_controller_ardupilot.py server and out to this device) for
     # the other half. SITL is the only connection_path that ever runs this
@@ -1068,21 +1029,20 @@ class ArdupilotNode:
     # have.
     if self.is_sitl:
       CameraBridgeDeviceRelay.ensure_started(self.msg_if)
-      # Same fix, extended to RESET_SIM and the follow-mission script's own
+      # Same relay, for RESET_SIM and the follow-mission script's own
       # TEARDOWN/START_TRIGGER connections -- see DeviceSideRelay's own
-      # docstring for why these three needed the identical treatment.
+      # docstring for why these three need the identical treatment.
       RESET_SIM_DEVICE_RELAY.ensure_started(self.msg_if)
       TEARDOWN_DEVICE_RELAY.ensure_started(self.msg_if)
       START_TRIGGER_DEVICE_RELAY.ensure_started(self.msg_if)
-    # Build the real, modern nepi_controls controls dict before starting the
-    # camera bridge thread below -- confirmed live: with this after the
-    # thread start instead, a fast bridge connect could call
+    # Build the nepi_controls controls dict before starting the
+    # camera bridge thread below: with this after the
+    # thread start, a fast bridge connect could call
     # sendCameraSettings() (which reads self.settings_dict['camera_offset_x']
-    # etc.) while self.settings_dict was still its empty class-level default,
+    # etc.) while self.settings_dict is still its empty class-level default,
     # raising "KeyError: 'camera_offset_x'" in that thread. initSettingsDict()
     # only needs self.msg_if/self.node_name (set at the very top of __init__)
-    # and the CAP_SETTINGS/FACTORY_SETTINGS class constants, so there's no
-    # reason it needs to run this late in the first place.
+    # and the CAP_SETTINGS/FACTORY_SETTINGS class constants.
     self.settings_dict = self.initSettingsDict()
     self.settings_dict = self.refreshSettingsDict()
 
@@ -1137,15 +1097,12 @@ class ArdupilotNode:
 
     # Fake GPS commands (takeoff climb, gotos, stop, home reset) go to the Nav
     # Sim app's GPS instance that injects GPS_INPUT into THIS vehicle's mavros
-    # node. Nav Sim absorbed the Fake GPS app in 3.4 and the old single
-    # "<base>/app_fake_gps" node is gone, so publishing there reached nothing:
-    # the simulated fix never moved and takeoff timed out with its whole
-    # height as the error. Each nav_sim GPS instance reports the mavros node it
+    # node. Each nav_sim GPS instance reports the mavros node it
     # is bound to on its own status topic, so updateFakeGpsTargetCb follows
     # those and points the command publishers at the instance bound to this
     # vehicle -- never at one feeding another vehicle (a physical drone and its
     # SITL twin can run at once). With no instance bound here, pubFakeGps is a
-    # no-op, which is all publishing to an absent app ever amounted to.
+    # no-op.
     self.fake_gps_lock = threading.Lock()
     self.fake_gps_status_subs = dict()   # instance namespace -> status subscriber
     self.fake_gps_bound_mavros = dict()  # instance namespace -> its selected_mavros_node
@@ -1177,7 +1134,7 @@ class ArdupilotNode:
                                   # own device discovery (simDiscoveryCb) only
                                   # matches DeviceRBXStatus publishers reporting
                                   # 'simulator' (SIM_SOURCE_DESCRIPTION) here, the
-                                  # same fix rbx_sim_node.py already carries.
+                                  # same as rbx_sim_node.py.
                                   # Conditional on is_sitl (unlike the rover, which
                                   # is never anything but a simulator) since this
                                   # same driver also serves genuine ArduPilot
@@ -1283,13 +1240,13 @@ class ArdupilotNode:
     ## is correct there as well as in SITL; the operator can still switch to
     ## any of the other five topics (SITL only) any time via the ordinary
     ## Image Source dropdown.
-    ## 3.4: RBXRobotIF has no setImageTopicCb; its image source is the
+    ## RBXRobotIF has no setImageTopicCb; its image source is the
     ## connect_img_if (ConnectColorImageIF) selection. set_selected_topic
     ## quietly rejects a topic the connect has not discovered yet, so on SITL
     ## the robot_color image IF's topic is selected by selectOwnImageCb once
     ## the connect has discovered it. A raw sensor_msgs/Image topic is not a
     ## NEPI image data product, so on real hardware this selection of the raw
-    ## relay topic is still rejected (see report).
+    ## relay topic is still rejected.
     if self.robot_color_if is not None:
       nepi_sdk.start_timer_process(1.0, self.selectOwnImageCb, oneshot = True)
     else:
@@ -1302,9 +1259,9 @@ class ArdupilotNode:
         self.msg_if.pub_warn("Could not select robot_color image source: " + str(e))
     ## Same "deterministic per-instance behavior regardless of what a
     ## previous run left in config" rationale as the image-topic override
-    ## just above -- see rbx_sim_node.py's own copy of this line for the
-    ## full incident writeup (a corrupted persisted enabled_image_sources
-    ## value silently disabled every camera by default on every launch).
+    ## just above -- see rbx_sim_node.py's own copy of this line (a corrupted
+    ## persisted enabled_image_sources value would silently disable every
+    ## camera by default on every launch).
     self.rbx_if.settings_if.update_setting_value('enabled_image_sources', '')
 
     ## Start goto setpoint check/send loop
@@ -1399,27 +1356,14 @@ class ArdupilotNode:
     # __init__/init()/reset()/factory_reset()), then mutates individual
     # entries of it in place (nepi_controls.reset_values() etc.).
     # Without a copy here, that mutation lands on THIS object's own live
-    # settings_dict too (same nested dicts, shared by reference) --
-    # confirmed live: motor_test_max_throttle_percent's own 'value' field
-    # was intermittently observed replaced with a whole nested dict,
-    # racing against SettingsIF's own init/reset cycle, which crashed
-    # setMotorControlRatio ("TypeError: float() argument must be ... not
-    # 'dict'") and silently no-op'd manual motor control and (via the same
-    # settings_dict) the LAUNCH/TAKEOFF setup action, while ARM/DISARM
-    # (which never reads settings_dict) kept working -- exactly the
-    # reported "can arm and disarm, not much else" symptom.
+    # settings_dict too (same nested dicts, shared by reference).
     return copy.deepcopy(self.settings_dict)
 
   def setSettingFunction(self, setting_name, setting_value):
     # SettingsIF (system_if.py) calls setSettingFunction(name, value,
-    # [callback_arg]) -- two/three plain positional args, not the single
-    # combined {'name','type','value'} dict this function's own body used to
-    # be written against (see git history/session notes for that mismatch).
+    # [callback_arg]) -- two/three plain positional args.
     # Validation goes through nepi_controls.get_clean_value(), matching the
-    # controls dict initSettingsDict() actually builds -- the retired
-    # nepi_settings.check_valid_setting(setting, cap_settings) path validated
-    # against CAP_SETTINGS' legacy shape, which is no longer what
-    # self.settings_dict's entries look like.
+    # controls dict initSettingsDict() actually builds.
     success = False
     setting_str = setting_name + ":" + str(setting_value)
     if setting_name not in self.settings_dict.keys():
@@ -1443,8 +1387,7 @@ class ArdupilotNode:
       self.setEnvironmentAction(setting_value)
     # Deep copy, matching getSettingsFunction()'s own reasoning exactly:
     # SettingsIF assigns this 3rd element straight to its own
-    # self.settings_dict, so returning the live object here would re-alias it
-    # right back after getSettingsFunction() already stopped doing so.
+    # self.settings_dict, so returning the live object here would alias it.
     return success, msg, copy.deepcopy(self.settings_dict)
 
   ##########################
@@ -1531,16 +1474,11 @@ class ArdupilotNode:
     response = nepi_sdk.call_service(self.command_client, test_cmd)
     if response is not None and response.success:
       self.motor_ratios[motor_ind] = speed_ratio
-      # "Move With Manual" -- reported live 2026-09-14: "it be nice for
-      # there to be a checkbox in the sim connector called move with
-      # manual that actually moves the robot when the motors are messed
-      # with manually, and when they're not, it moves the motors properly
-      # but it doesnt actually move the robot." MAV_CMD_DO_MOTOR_TEST above
+      # "Move With Manual": MAV_CMD_DO_MOTOR_TEST above
       # (unconditional, both branches of this toggle) is a ground-test
       # command that spins one real motor with no relation to flight --
-      # exactly the "moves the motors but not the robot" OFF behavior,
-      # already true before this Setting existed. ON reuses this driver's
-      # own existing, already-armed-and-tested teleop velocity mechanism
+      # the OFF behavior. ON reuses this driver's
+      # own teleop velocity mechanism
       # (setTeleopVelocity/sendTeleopVelocityLoop, the same path a keyboard
       # teleop command uses) rather than inventing a new, materially
       # riskier direct per-motor mixing/thrust path: real per-motor mixing
@@ -1550,7 +1488,7 @@ class ArdupilotNode:
       # actual, physically wrong attitude response. Average of every motor's
       # own ratio (all non-negative, since a motor test throttle can't be
       # negative) becomes a simple climb-rate command -- "moving the
-      # motors" now visibly moves the vehicle too, without guessing this
+      # motors" visibly moves the vehicle too, without guessing this
       # frame's exact per-rotor roll/pitch/yaw mixing.
       if self.getSettingSelection('move_with_manual_enabled') == 'TRUE' and self.teleopControlsReady():
         avg_ratio = sum(self.motor_ratios) / float(len(self.motor_ratios))
@@ -1618,7 +1556,6 @@ class ArdupilotNode:
     self.setMotorControlRatio(motor_ind, 0.0)
 
   def runMotorSvx(self, motor_ind, signed_ratio):
-    # Same gate the RBX interface applied to set_motor_control before 3.4
     if self.motor_svx_cmds_enabled == False:
       return False
     if self.manualControlsReady() != True:
@@ -1691,10 +1628,6 @@ class ArdupilotNode:
   def sendGotoCommandLoop(self,timer):
     if self.rbx_if.status_msg.ready == False:
       if self.attitude_target != None:
-        # += self.att_sp_seq (previously) starting from 0 (line 317) is
-        # always 0 -- header.seq never actually incremented. Harmless to
-        # MAVROS/ArduCopter (they don't gate on it), but not what a
-        # monotonic sequence counter is for; += 1 is the fix.
         self.att_sp_seq += 1
         self.attitude_target.header.stamp = nepi_sdk.get_msg_stamp()
         self.attitude_target.header.seq = self.att_sp_seq
@@ -1739,8 +1672,7 @@ class ArdupilotNode:
     # target below, which is what every use of this command actually
     # wants -- an attitude to reach, not a rate to hold).
     #
-    # Bit 64 (ignore throttle) is deliberately NOT set here, even though it
-    # looks like the obvious fix for the bug below -- confirmed against
+    # Bit 64 (ignore throttle) is deliberately NOT set here -- see
     # ArduCopter's own current source
     # (ArduCopter/GCS_MAVLink_Copter.cpp, handle_message_set_attitude_target):
     #   if (throttle_ignore) {
@@ -1749,28 +1681,24 @@ class ArdupilotNode:
     #     return;
     #   }
     # Setting it makes Copter discard the ENTIRE message -- orientation
-    # included -- and hold its current position instead. Confirmed live:
-    # with bit 64 set, a 180-degree goto_pose held altitude perfectly but
-    # never actually rotated; the command was a total no-op, not a safe
+    # included -- and hold its current position instead, so with bit 64 set,
+    # a 180-degree goto_pose would hold altitude perfectly but
+    # never actually rotate; the command would be a total no-op, not a safe
     # version of itself.
     type_mask = 1|2|4
     attitude_target_msg = AttitudeTarget()
     attitude_target_msg.orientation = orientation_enu_quat
     attitude_target_msg.body_rate = body_rate
     attitude_target_msg.type_mask = type_mask
-    # thrust=0 (previously) is NOT "zero motor thrust" -- with bit 64 above
+    # thrust=0 is NOT "zero motor thrust" -- with bit 64 above
     # unset, Copter treats thrust as a CLIMB RATE command (same source as
     # above, the use_thrust=false branch): 0.5 means "hold altitude" (zero
     # climb rate, its own Z controller picks whatever throttle that takes),
     # 0.0 means "descend at the full WPNAV_SPEED_DN rate" for as long as
     # this setpoint keeps streaming, and 1.0 means "climb at WPNAV_SPEED_UP".
-    # thrust=0 therefore commanded a continuous forced descent on every
+    # thrust=0 would therefore command a continuous forced descent on every
     # single goto_pose call, including a pure yaw change with roll/pitch
-    # left at 0 -- a small attitude change could look survivable if the
-    # setpoint stream stopped (target reached) before the descent became
-    # visible; a large one (confirmed live: 180 degrees of yaw, which takes
-    # longer to converge) kept streaming that forced descent long enough to
-    # reach the ground. 0.5 is the fix: zero commanded climb rate, altitude
+    # left at 0. 0.5 is zero commanded climb rate, altitude
     # held by Copter's own controller, while the attitude controller drives
     # toward the requested orientation independently. This is standard
     # ArduCopter GUIDED-mode behavior (identical on SITL and real hardware),
@@ -1790,25 +1718,15 @@ class ArdupilotNode:
     # robot to a target position in the LOCAL BODY FRAME" and its comment
     # explicitly notes each driver adds its own current position (see
     # rbx_sim_node.py's identical gotoPosition, "RBXRobotIF passes the goal
-    # as an ENU offset point from the current position"). This driver
-    # skipped that addition and published point_enu_m straight to mavros's
-    # setpoint_position/local, which IS an absolute local-ENU target
-    # relative to the EKF origin (home) -- so "move forward 2m" silently
-    # became "fly to home+2m, ignoring wherever you currently are",
-    # reported live as goto_position only ever working correctly from a
-    # fresh spawn at the origin, and confirmed by a live test: commanding
-    # +2m from x=8.4m sent the vehicle toward roughly x=2m (home-relative)
-    # instead of x=10.4m (current-position-relative). Adding self.navpose_dict
-    # here makes this match rbx_sim_node.py's rover exactly, giving the
-    # quadcopter the same "move N units from wherever it is right now"
-    # capability the rover already had.
+    # as an ENU offset point from the current position"). mavros's
+    # setpoint_position/local IS an absolute local-ENU target
+    # relative to the EKF origin (home), so this driver adds
+    # self.navpose_dict here, matching rbx_sim_node.py's rover exactly.
     #
     # The fake GPS gets the offset as received, NOT that absolute target:
     # nav_sim's goto_position is itself a relative move from the simulated
-    # fix's current spot. Handing it the absolute target moved the fix by
-    # offset + current local position on every goto -- confirmed on the bench
-    # 2026-11-10: "forward 6 m" from 5 m up moved it 7.84 m, mostly upward, and
-    # the altitude compounded over each following goto.
+    # fix's current spot. Handing it the absolute target would move the fix by
+    # offset + current local position on every goto.
     fake_gps_offset_enu_m = Point(x = point_enu_m.x, y = point_enu_m.y, z = point_enu_m.z)
     point_enu_m.x = point_enu_m.x + self.navpose_dict['x_m']
     point_enu_m.y = point_enu_m.y + self.navpose_dict['y_m']
@@ -1835,7 +1753,7 @@ class ArdupilotNode:
     # Create GeoPose Setpoint Global AMSL and Yaw ENU Message. RBXRobotIF
     # hands over an ENU attitude; mavros setpoint_position/global takes the
     # orientation as ENU and converts the yaw to NED itself. Building this
-    # quaternion from a NED yaw (as before) commanded the wrong heading for
+    # quaternion from a NED yaw would command the wrong heading for
     # every yaw except 45 and 225 degrees, where NED and ENU yaw coincide.
     orientation_enu_q = nepi_nav.convert_rpy2quat(orientation_enu_deg)
     orientation_enu_quat = Quaternion()
@@ -1856,9 +1774,7 @@ class ArdupilotNode:
     # unconverted, so geopoint_amsl's AMSL altitude is what the FCU flies to.
     self.location_target = location_global_target_msg
     # nav_sim's location is AMSL (see pubFakeGpsLocation), the same frame as
-    # this goal, so it gets geopoint_amsl unchanged. This used to convert the
-    # goal to ellipsoid height first, on the belief that the Fake GPS app kept
-    # WGS84; it never did -- it put the altitude straight into GPS_INPUT.alt.
+    # this goal, so it gets geopoint_amsl unchanged.
     self.pubFakeGps('goto_location',geopoint_amsl)
 
   ##########################
@@ -1868,9 +1784,9 @@ class ArdupilotNode:
     # Always ready. ArduPilot's own DO_MOTOR_TEST handler arms the FC itself
     # as a side effect of running a motor test (see ArduCopter/motor_test.cpp
     # mavlink_motor_test_start()), which flips the mavros "armed" state we'd
-    # otherwise gate on here. Gating manual/motor controls on DISARM created a
-    # self-inflicted deadlock: testing one motor reported the vehicle as ARMed
-    # until that test's timeout elapsed, locking out every other motor
+    # otherwise gate on here. Gating manual/motor controls on DISARM would create a
+    # self-inflicted deadlock: testing one motor reports the vehicle as ARMed
+    # until that test's timeout elapses, locking out every other motor
     # command (including Turn Off) for the whole test duration. ArduPilot's
     # own mavlink_motor_control_check() (board initialized, motor_test_checks,
     # landed) is the real safety gate for motor tests -- no client-side arm
@@ -1880,16 +1796,13 @@ class ArdupilotNode:
   def isAirborne(self):
     # takeoff_complete is set once, by takeoff_action()'s own bounded wait
     # loop -- if that loop times out while the vehicle is still genuinely
-    # climbing (confirmed live 2026-09-01: a loaded VM can leave the vehicle
+    # climbing (a loaded VM can leave the vehicle
     # several meters short at the timeout, then keep climbing under its own
     # MAVLink TAKEOFF command and reach goal_alt a couple minutes later),
-    # takeoff_complete stays False for the rest of the flight -- exactly the
-    # "false timeout PERMANENTLY disabled every goto command" failure this
-    # class of check already exists to avoid, just via a path the 2026-08-12
-    # fix didn't cover (that one only handled converging AT the timeout
-    # boundary, not well after it). Rather than widen the wait loop's own
-    # timeout further (already raised once, still not always enough under
-    # load), recheck the actual current altitude against the recorded goal
+    # takeoff_complete stays False for the rest of the flight. Rather than
+    # widen the wait loop's own
+    # timeout further,
+    # recheck the actual current altitude against the recorded goal
     # here on every readiness query -- cheap, and self-correcting the moment
     # the vehicle actually gets there, instead of trusting a flag that can
     # never become true again once it's False.
@@ -1915,7 +1828,7 @@ class ArdupilotNode:
       return False
     ready = False
     # mode_ind is -999 while ArduPilot reports a mode not in RBX_MODES (e.g.
-    # AUTO), and RBX_MODES[-999] raised IndexError; such a mode is not GUIDED.
+    # AUTO), and RBX_MODES[-999] would raise IndexError; such a mode is not GUIDED.
     mode_known = (0 <= self.mode_ind < len(self.RBX_MODES))
     if self.RBX_STATES[self.state_ind] == "ARM" and mode_known and self.RBX_MODES[self.mode_ind] == "GUIDED" and self.isAirborne():
       ready = True
@@ -1950,29 +1863,19 @@ class ArdupilotNode:
     # the same way a real quadcopter's stick inputs work.
     #
     # Scaled by max_linear_speed_mps-equivalent -- this driver has no such
-    # Setting today (unlike rbx_sim_node.py), so a fixed, conservative cap is
+    # Setting (unlike rbx_sim_node.py), so a fixed, conservative cap is
     # used instead. TELEOP_MAX_LINEAR_MPS/TELEOP_MAX_ANGULAR_DPS below.
     max_lin = self.TELEOP_MAX_LINEAR_MPS
     max_ang = math.radians(self.TELEOP_MAX_ANGULAR_DPS)
     body_x = max(-1.0, min(1.0, linear_x)) * max_lin
     # Body FLU, y+ = LEFT, per the RBXRobotIF teleop contract, so not negated.
-    # The 2026-09-14 negation (y+ = right for this driver's teleop alone) is
-    # removed; a client that wants a key to strafe right sends linear.y < 0.
+    # A client that wants a key to strafe right sends linear.y < 0.
     body_y = max(-1.0, min(1.0, linear_y)) * max_lin
     yaw_rad = math.radians(self.navpose_dict['yaw_deg'])
     # Standard body(x+forward,y+left)->ENU rotation, matching
-    # convert_point_body2enu exactly. The hand-tuned "+90 degree
-    # pre-rotation" that lived here before (added 2026-09-08, swapping
-    # body_x/body_y and negating a term) was reverse-engineered against
-    # self.navpose_dict['yaw_deg'] while that value was still being computed
-    # via the wrong convert_yaw_ned2enu reflection (odom_topic_callback,
-    # fixed 2026-09-14) -- it only cancelled out correctly at the single
-    # heading (reported yaw ~= 0) that fix was tested against, and produces
-    # a wrong rotation everywhere else (confirmed algebraically once
-    # yaw_deg's real relationship to Gazebo ground truth -- a fixed +90
-    # degree offset shared with x_m/y_m -- is substituted in symbolically).
-    # Now that yaw_deg is the raw, self-consistent mavros value (offset
-    # from Gazebo by that same fixed rotation x_m/y_m already carries),
+    # convert_point_body2enu exactly. yaw_deg is the raw, self-consistent
+    # mavros value (offset
+    # from Gazebo by that same fixed rotation x_m/y_m already carries), so
     # the plain rotation below is correct for every heading with no
     # separate world-frame compensation needed.
     enu_x = body_x * math.cos(yaw_rad) - body_y * math.sin(yaw_rad)
@@ -2015,24 +1918,8 @@ class ArdupilotNode:
       # was last commanded (which may itself have been a dropped stop).
       enu = [0.0, 0.0, 0.0]
       ang_z = 0.0
-    # Direct (enu[0], enu[1]) passthrough. A "-90 degree world-frame
-    # rotation" compensation was added here on 2026-09-04, derived from a
-    # live measurement that a pure "forward" command produced almost pure
-    # -Y Gazebo movement. Re-measured live on 2026-09-04 with the vehicle's
-    # yaw properly read (odom_topic_callback's NED->ENU yaw fix, committed
-    # separately) at yaw ~= 0.4 degrees: sending a pure body-forward
-    # command with that compensation in place produced almost pure +Y
-    # movement (dx ~= -0.05 m, dy ~= +5.7 m over the test window) instead
-    # of the intended +X -- i.e. the compensation itself was a spurious
-    # extra 90 degree rotation, not a fix. The original measurement that
-    # motivated it was almost certainly taken against a stale/incorrect
-    # yaw reading (from before that same-day yaw fix), so what looked like
-    # a "separate world-frame rotation bug" was actually the yaw bug's own
-    # rotation error, already resolved upstream once yaw_deg reads
-    # correctly. Removed rather than re-derived a new correction on top --
-    # a straight passthrough now matches setTeleopVelocity's own
-    # already-correct body->ENU rotation with no further compensation
-    # needed.
+    # Direct (enu[0], enu[1]) passthrough: setTeleopVelocity has already
+    # rotated body->ENU, so no further compensation is needed.
     twist = Twist()
     twist.linear.x = enu[0]
     twist.linear.y = enu[1]
@@ -2076,9 +1963,7 @@ class ArdupilotNode:
       # WGS84 ellipsoid, so it is stored as is. geoid_height_meters is the
       # geoid height N there (geoid above the ellipsoid), from nepi_nav's geoid
       # database, so RBXRobotIF can form AMSL = altitude - N for the
-      # setpoint_position/global target. It used to be read back from
-      # self.rbx_if.current_geoid_height_m (a self-referential loop pinned at
-      # 0), then an explicit 0; see updateGeoidHeight.
+      # setpoint_position/global target; see updateGeoidHeight.
       self.updateGeoidHeight(navsatfix_msg.latitude, navsatfix_msg.longitude)
       geoid_height_m = self.geoid_height_m
       altitude_wgs84 = navsatfix_msg.altitude
@@ -2106,12 +1991,9 @@ class ArdupilotNode:
       # header.frame_id), never body-relative -- mavros's global_position/local
       # already reports an absolute ENU position here. Rotating it through
       # convert_point_body2enu() (meant for genuinely body-relative offsets)
-      # double-applied the vehicle's own yaw on top of an already-absolute
-      # position, so any x/y offset from the origin got rotated by the
-      # vehicle's heading -- confirmed live 2026-08-27 as the root cause of
-      # horizontal drift/"flew to some random place" during follow-object
-      # missions (a goto to a real target coordinate got silently re-rotated
-      # into the wrong direction as soon as the vehicle's yaw was nonzero).
+      # would double-apply the vehicle's own yaw on top of an already-absolute
+      # position, so any x/y offset from the origin would get rotated by the
+      # vehicle's heading.
       xyz = pos_list
       time_ns = nepi_sdk.sec_from_msg_stamp(odom_msg.header.stamp)
 
@@ -2120,8 +2002,8 @@ class ArdupilotNode:
       self.navpose_dict['time_orientation'] = time_ns
       self.navpose_dict['roll_deg'] = rpy[0]
       self.navpose_dict['pitch_deg'] = rpy[1]
-      # Use rpy[2] directly -- NOT convert_yaw_ned2enu(rpy[2]) (removed
-      # 2026-09-14). mavros's global_position/local orientation quaternion
+      # Use rpy[2] directly -- NOT convert_yaw_ned2enu(rpy[2]).
+      # mavros's global_position/local orientation quaternion
       # is already expressed in ENU (mavros converts the FCU's internal NED
       # attitude to ENU before publishing this topic, same as every other
       # mavros pose/odometry topic), so rpy[2] here is already an ENU yaw --
@@ -2134,11 +2016,7 @@ class ArdupilotNode:
       # /gazebo/model_states: driver_x ~= -gazebo_y, driver_y ~= gazebo_x).
       # convert_yaw_ned2enu (90-yaw) treats rpy[2] as a compass-style NED
       # heading and reflects it -- the wrong operation on an already-ENU
-      # value -- which happened to cancel out at the single heading it was
-      # verified against (2026-09-04, vehicle facing ~Gazebo-north, raw
-      # yaw ~90 which the reflection formula collapses to ~0) but produces
-      # a heading-dependent wrong answer everywhere else. That's the
-      # confirmed root cause of goto_position's axis flip (2026-09-14):
+      # value, which gives a heading-dependent wrong answer.
       # setpoint_position_local_body (nepi_api/device_if_rbx.py) rotates a
       # caller's body-frame command into ENU using this yaw value, then
       # gotoPosition below adds it to x_m/y_m (already in this same,
@@ -2147,12 +2025,11 @@ class ArdupilotNode:
       # NOT reflecting only one of them), "forward" rotates correctly
       # relative to the vehicle's own current heading and the relative-
       # position add above lands in the right place. Reflecting yaw alone
-      # broke that agreement. This does not attempt to also correct the
+      # would break that agreement. This does not attempt to also correct the
       # fixed ~90 deg offset from Gazebo's own world frame -- nothing in
       # this app needs the vehicle's ENU to numerically match Gazebo's
       # world axes, only that goto/teleop motions stay self-consistent
-      # with the vehicle's own reported heading and position, which this
-      # restores.
+      # with the vehicle's own reported heading and position.
       self.navpose_dict['yaw_deg'] = rpy[2]
 
       # Relative Position Meters in selected 3d frame (x,y,z) with x forward, y right/left, and z up/down
@@ -2255,8 +2132,8 @@ class ArdupilotNode:
 
   def selectOwnImageCb(self, timer):
     # Select the SITL robot_color image IF as the RBX image source once the
-    # connect has discovered it. Like the raw-topic selection this replaces,
-    # it overrides any persisted selection every startup; the operator can
+    # connect has discovered it.
+    # It overrides any persisted selection every startup; the operator can
     # pick another source afterwards. Gives up after a bounded number of tries.
     if self.robot_color_if is None or self.rbx_if is None or nepi_sdk.is_shutdown():
       return
@@ -2312,8 +2189,7 @@ class ArdupilotNode:
         self.rbx_if.update_error_msg(no_gps_msg)
     else:
       self.msg_if.pub_info("Updating State to: " + str(arm_value))
-      # See set_mavlink_mode's identical removal for why this unconditional
-      # 1s sleep is gone -- same unjustified per-command latency.
+      # No unconditional sleep here either -- see set_mavlink_mode's comment.
       self.msg_if.pub_info("Waiting for armed value to set to " + str(arm_value))
       timeout_sec = self.rbx_if.status_msg.cmd_timeout
       check_interval_s = 0.25
@@ -2321,7 +2197,7 @@ class ArdupilotNode:
       # Same response-checking as set_mavlink_mode -- see its comment. mavros'
       # CommandBool replies success=False when the FCU rejects arming (failed
       # pre-arm checks being the usual reason), which is the single most useful
-      # thing to tell an operator and was previously thrown away.
+      # thing to tell an operator.
       no_response_count = 0
       refused_count = 0
       while self.mavlink_state.armed != arm_value and check_timer < timeout_sec and not nepi_sdk.is_shutdown():
@@ -2371,29 +2247,22 @@ class ArdupilotNode:
     new_mode.custom_mode = mode_new
     self.msg_if.pub_info("Updating mode")
     self.msg_if.pub_info(mode_new)
-    # Was `time.sleep(1)` here ("give time for other process to see busy") --
-    # removed. No process actually waits on this: RBXRobotIF's own busy/
+    # No sleep is needed here to "give time for other process to see busy".
+    # No process actually waits on this: RBXRobotIF's own busy/
     # process_current state is set before this function is ever called, not
     # inside it, and the poll loop below already only proceeds once the FCU
-    # actually reports the new mode. A flat 1s of dead time before every
-    # single mode change (and the identical one in set_mavlink_arm_state) is
-    # exactly the reported "sending commands is really slow" -- a LAUNCH
-    # setup action alone chains a mode change and an arm, so this was 2+
-    # full seconds of unconditional sleep before anything even started, on
-    # every command, every time.
+    # actually reports the new mode.
     self.msg_if.pub_info("Waiting for mode to set to " + mode_new)
     timeout_sec = self.rbx_if.status_msg.cmd_timeout
     check_interval_s = 0.25
     check_timer = 0
-    # The service RESPONSE is checked now rather than discarded. mavros'
+    # The service RESPONSE is checked. mavros'
     # SetMode replies mode_sent=False when it refuses to forward the request
     # at all, and nepi_sdk.call_service returns None when the call itself
     # failed (it catches every exception and logs only at DEBUG, which ROS
-    # suppresses by default). Ignoring both meant a mode change that was
-    # never even sent looked exactly like one the FCU was still working on:
-    # this loop just spun for the full cmd_timeout and the operator saw a
-    # LAUNCH that sat there and then quietly gave up. Reported repeatedly as
-    # "the launch command doesn't work" with nothing in last_error_message.
+    # suppresses by default). Ignoring both would make a mode change that was
+    # never even sent look exactly like one the FCU was still working on:
+    # this loop would spin for the full cmd_timeout and then quietly give up.
     #
     # Logged once per distinct outcome rather than every 0.25 s tick, so a
     # genuinely-slow-but-working mode change doesn't spam the message topic.
@@ -2418,7 +2287,7 @@ class ArdupilotNode:
       self.msg_if.pub_info("Mode set to " + mode_new)
     else:
       # Include what the vehicle's mode ACTUALLY is, plus whether the calls
-      # were even getting through -- "timed out" alone gave no way to tell a
+      # were even getting through -- "timed out" alone gives no way to tell a
       # rejected request from an unreachable service from an FCU that simply
       # would not change mode.
       fail_msg = ("Setting mode to " + mode_new + " timed out after " + str(timeout_sec) +
@@ -2459,10 +2328,7 @@ class ArdupilotNode:
   global launch
   def launch(self):
     # LAUNCH is guided-mode -> arm -> takeoff, and it aborts at the first step
-    # that fails. Each abort now says WHICH step and reports it to the RUI.
-    # Previously a failure anywhere here returned a bare False: the RUI showed
-    # the action finish with an empty last_error_message and the vehicle simply
-    # never moved, which is unactionable ("the launch command doesn't work").
+    # that fails. Each abort says WHICH step and reports it to the RUI.
     # The step functions surface their own reasons too (see set_mavlink_mode /
     # set_mavlink_arm_state); this adds which stage of LAUNCH was reached.
     self.msg_if.pub_info("Recieved Launch cmd")
@@ -2600,9 +2466,9 @@ class ArdupilotNode:
     # nav_sim hands its altitude to the FCU as GPS_INPUT.alt, which MAVLink
     # defines as MSL, so nav_sim's location is AMSL. This driver's own
     # geopoints (current location, home) carry WGS84 ellipsoid heights and are
-    # converted here. Sent unconverted, the simulated fix sat the geoid height
-    # (~20 m at the bench) away from the FCU's own goal, so location moves never
-    # converged (bench, 2026-11-10). A -999 hold altitude stays -999 so nav_sim
+    # converted here. Sent unconverted, the simulated fix would sit the geoid height
+    # (~20 m at the bench) away from the FCU's own goal, so location moves would never
+    # converge. A -999 hold altitude stays -999 so nav_sim
     # still holds that axis; converted, it would become a real target.
     geopoint_out = copy.deepcopy(geopoint_wgs84)
     if geopoint_wgs84.altitude != -999:
@@ -2614,17 +2480,13 @@ class ArdupilotNode:
     # may not have one at all. The Nav Sim GPS instance cannot know which it is
     # looking at, so this driver -- which does -- tells it.
     #
-    # Why this exists: confirmed live 2026-08-12, app_fake_gps left enabled from
-    # earlier real-hardware testing kept injecting GPS_INPUT at 41 Hz from its
-    # configured start point (46.654, -122.319) while the ArduCopter SITL's own
-    # simulated GPS sat at (-35.363, 149.165). Two GPS sources ~13000 km apart,
-    # both claiming gps_id 0, so the EKF never converged on a position estimate,
-    # ArduPilot answered "PreArm: Need Position Estimate", and every LAUNCH
-    # aborted at the ARM step with the vehicle never leaving the ground.
-    # Nothing in the system reconciled the two, and the app's enabled state
-    # persists in /mnt/nepi_storage/user_cfg/app_fake_gps.yaml across reboots --
-    # so once it was on, it stayed on and every subsequent sim silently could
-    # not fly.
+    # Why this exists: a fake GPS injecting GPS_INPUT into a vehicle that
+    # has its own GPS gives two GPS sources, both claiming gps_id 0, so the
+    # EKF never converges on a position estimate,
+    # ArduPilot answers "PreArm: Need Position Estimate", and every LAUNCH
+    # aborts at the ARM step with the vehicle never leaving the ground.
+    # The fake GPS enabled state
+    # persists across reboots.
     #
     # Direction of the reconcile is decided by device_path, which discovery
     # builds as connection_type + "_" + address (see discoveryFunction): a SITL
@@ -2659,9 +2521,7 @@ class ArdupilotNode:
       # Wait for nav_sim's subscriber to actually connect before publishing.
       # The publisher was created just before this call, and a rospy publish
       # issued before the subscriber connection completes is dropped on the
-      # floor with no error -- confirmed live 2026-08-12, an earlier version
-      # published straight after create_publisher and the app's enabled flag
-      # never changed.
+      # floor with no error.
       self.waitForPubConnection(enable_pub)
       nepi_sdk.publish_pub(enable_pub, Bool(data = (not is_sitl)))
       if is_sitl:
@@ -2680,17 +2540,12 @@ class ArdupilotNode:
 
   def describeArmRefusalCause(self):
     # ArduPilot refusing to ARM is almost never a NEPI-side problem, so the raw
-    # refusal is unactionable on its own. The one cause this deployment has
-    # actually hit -- and it cost most of a debugging session to find -- is the
+    # refusal is unactionable on its own. A known cause
+    # is the
     # Fake GPS app injecting GPS_INPUT into this same mavros node while the
     # vehicle (a SITL, or any FCU with a real GPS) already has its own GPS.
-    # Confirmed live 2026-08-12: app_fake_gps published GPS_INPUT at 41 Hz with
-    # its factory start point (46.654, -122.319, Washington State) while the
-    # ArduCopter SITL's simulated GPS sat at (-35.363, 149.165, Canberra) --
-    # two sources ~13000 km apart both claiming gps_id 0. The EKF never formed
-    # a position estimate, ArduPilot answered "PreArm: Need Position Estimate",
-    # and LAUNCH aborted here every time. Disabling Fake GPS was the only change
-    # needed to make the vehicle arm, take off and hold 5 m.
+    # Two GPS sources both claiming gps_id 0 keep the EKF from forming
+    # a position estimate, so ArduPilot answers "PreArm: Need Position Estimate".
     #
     # So: on an arm refusal, look for a foreign publisher on this mavros node's
     # gps_input topic and name it. Any failure to inspect the graph is swallowed
@@ -2734,9 +2589,9 @@ class ArdupilotNode:
       nepi_sdk.call_service(self.takeoff_client, takeoff_cmd)
       # Command the fake GPS to climb straight up by takeoff_height_m using a
       # RELATIVE ENU move (east=0, north=0, up=+height) rather than an absolute
-      # goto_location. Holding lat/lon and moving relative avoids two bench bugs:
+      # goto_location. Holding lat/lon and moving relative:
       # (1) it never depends on current_location being populated (an absolute
-      #     goto with a [0,0,0] current sent the vehicle to lat/lon 0,0), and
+      #     goto with a [0,0,0] current would send the vehicle to lat/lon 0,0), and
       # (2) it needs no altitude datum. The navpose altitude here is the mavros
       #     ellipsoid height h, while the RBX IF setpoints and the fake GPS
       #     (GPS_INPUT alt) are AMSL = h - N, N being the geoid height above
@@ -2767,22 +2622,16 @@ class ArdupilotNode:
         check_timer += check_interval_s
       # Success is decided by whether the vehicle actually REACHED the altitude,
       # not by whether it got there fast enough. The loop above exits on either
-      # condition, and this used to test `check_timer < timeout_sec` -- so a climb
-      # that converged right at the timeout boundary was recorded as a failure
-      # even though the vehicle was exactly on target.
+      # condition, so a climb
+      # that converges right at the timeout boundary still counts as on target.
       #
-      # That was not cosmetic. takeoff_complete is one of the three things
+      # takeoff_complete is one of the three things
       # autonomousControlsReady() requires (with ARM and GUIDED), so a false
-      # timeout PERMANENTLY disabled every goto command for the rest of the
-      # flight on a vehicle that was hovering at its target altitude and
-      # perfectly capable of flying. Confirmed live 2026-08-12 running
-      # drone_follow_object_mission_script.py against ArduCopter SITL: the
-      # vehicle climbed 0.007 m -> 10.004 m and held it, while the RBX status
-      # reported "takeoff did not complete", autonomous_control_mode_ready
-      # stayed False, and the follow logic's goto_position commands were all
-      # silently rejected -- local x/y never left 0.001 m. A loaded VM runs SITL
-      # slower than realtime, so the ~20 s climb landed right on the script's
-      # 20 s action timeout and lost the race by a fraction.
+      # timeout would PERMANENTLY disable every goto command for the rest of the
+      # flight on a vehicle hovering at its target altitude and
+      # perfectly capable of flying. A loaded VM runs SITL
+      # slower than realtime, so a ~20 s climb can land right on a
+      # 20 s action timeout.
       #
       # A genuine failure (timed out while still metres away) still reports
       # failure, because that is judged on alt_error too.
@@ -2822,12 +2671,11 @@ class ArdupilotNode:
     if not self.is_sitl:
       self.msg_if.pub_warn("Reset Sim ignored: this is not a simulated vehicle")
       return False
-    # Reset FIRST, disarm AFTER -- the original order (disarm, then reset)
-    # cut motor thrust immediately while the vehicle was still at its
-    # pre-reset altitude, so gravity took over and it visibly free-fell for
-    # however long the gz_reset_listener round trip took before ever
-    # snapping back, reported live as "kills all the motors and makes the
-    # quadcopter just fall from the air" instead of an instant reset.
+    # Reset FIRST, disarm AFTER -- disarming first
+    # would cut motor thrust immediately while the vehicle is still at its
+    # pre-reset altitude, so it would free-fall for
+    # however long the gz_reset_listener round trip takes before ever
+    # snapping back.
     # Disarming only once the vehicle is already back at its resting spawn
     # pose leaves nothing left to fall from.
     cmd_success = False
@@ -2900,7 +2748,7 @@ class ArdupilotNode:
       time.sleep(check_interval_s)
       check_timer += check_interval_s
     # Landing completes when the vehicle disarms; still ARM here means the
-    # wait above timed out (this test was inverted).
+    # wait above timed out.
     if self.state_current != "ARM":
       self.msg_if.pub_info("Land process complete")
       cmd_success = True
@@ -3009,8 +2857,8 @@ class ArdupilotNode:
 
   #######################
   # Camera Bridge Processes (Universal Simulator Bridge camera feature,
-  # ArduPilot SITL port -- see camera_rig_controller_ardupilot.py and the
-  # session summary for the full design). Independent persistent connection
+  # ArduPilot SITL port -- see camera_rig_controller_ardupilot.py for the
+  # full design). Independent persistent connection
   # from the mavros/MAVLink path above: MAVLink already carries
   # telemetry/commands, this connection carries ONLY camera settings out and
   # compressed frames in.
@@ -3051,12 +2899,11 @@ class ArdupilotNode:
       # to have spawned; re-assert this node's own current Setting value
       # instead.
       #
-      # Guarded to fire ONCE per process, not on every reconnect -- found
-      # live (2026-09-17), same root cause and fix as rbx_sim_node.py's own
-      # bridge-accept loop: "i could only change the obstacle course once.
-      # it didnt work after." The camera bridge connection to this device
+      # Guarded to fire ONCE per process, not on every reconnect, as in
+      # rbx_sim_node.py's own
+      # bridge-accept loop. The camera bridge connection to this device
       # type is known to drop and reconnect on its own (a flaky far-end sim
-      # process), and every one of those reconnects re-ran this line using
+      # process), and re-running this line on every reconnect would use
       # whatever the 'environment' setting happened to be at
       # that moment -- correct on the very FIRST connect, but on every
       # SUBSEQENT reconnect this could race an operator's own more recent
@@ -3148,10 +2995,9 @@ class ArdupilotNode:
                                 "Environment set to " + environment_value)
     return True
 
-  # "camera" (added alongside camera_rig_controller_ardupilot.py's four-topic
+  # "camera" (camera_rig_controller_ardupilot.py's four-topic
   # split) picks which of the four publishers a frame goes to; an older
-  # sender with no "camera" field defaults to robot_color, matching the
-  # original single-topic behavior.
+  # sender with no "camera" field defaults to robot_color.
   CAMERA_PUB_ATTR = {
     "robot_color": "image_pub_robot_color",
     "scene_color": "image_pub_scene_color",
@@ -3204,7 +3050,7 @@ class ArdupilotNode:
       # certainly blocked in (or about to re-enter) a recv() on this exact
       # socket -- closing a fd out from under a thread blocked in recv() on
       # it does not reliably unblock that recv() on Linux, matching
-      # camera_rig_controller_ardupilot.py's own sendLineToClient fix for
+      # camera_rig_controller_ardupilot.py's own sendLineToClient handling of
       # the same underlying cross-thread unwedge problem on the server side
       # of this bridge.
       try:
@@ -3220,9 +3066,7 @@ class ArdupilotNode:
     # All current values together, always -- camera_rig_controller_
     # ardupilot.py fills any missing key with its own default, so a partial
     # push (e.g. only the field that just changed) would silently reset the
-    # rest to that default. No view_mode -- both views are always-live,
-    # separate ROS topics now (see CAMERA_SETTING_NAMES's own comment),
-    # nothing left to switch.
+    # rest to that default.
     cmd = {
       'type': 'camera_settings',
       'offset_x': float(nepi_controls.get_value(self.settings_dict, 'camera_offset_x')),

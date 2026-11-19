@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License",
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 
 import copy
@@ -213,8 +215,7 @@ class Limelight4UsbCamNode:
     def initSettingsDict(self):
         init_settings_dict = dict()
 
-        # Pipeline: indices 0-9. The retired cap-settings form called this
-        # 'Discrete'; the controls contract calls a named option list a
+        # Pipeline: indices 0-9. The controls contract calls a named option list a
         # Selection.
         ret, pipeline_idx = self.driver.get_pipeline()
         pipeline_val = str(pipeline_idx) if ret else '0'

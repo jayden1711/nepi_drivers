@@ -2,10 +2,11 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License",
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
 # Redistributions in source code must retain this top-level comment block.
@@ -38,23 +39,16 @@ class SitlMavlinkRelay:
   """Device-side half of the VM<->device MAVLink TCP relay used only when
   connection_type == 'SITL' -- see mavlink_relay_vm.py (in nepi_drones'
   sim_container/scripts/) for the VM-side half and the full root-cause
-  writeup of why this exists: the reverse SSH tunnel that used to make the
-  VM's real SITL MAVLink port transparently reachable at 127.0.0.1:5771 on
-  THIS device is gone now that every sim_connector bridge dials OUT from
-  the VM to the device instead. Confirmed live (2026-09-08): with nothing
-  forwarding it anymore, this class's own module (rbx_ardupilot_discovery)
-  logged "Did not find TCP device on ip address: 127.0.0.1 port: 5771" in
-  an endless loop the entire time a real quadcopter sim was up and running
-  fine on the VM -- no RBX device ever registered for it, so nothing
-  Settings-related, no images, nothing worked for that target at all.
+  writeup of why this exists: every sim_connector bridge dials OUT from
+  the VM to the device, so nothing else makes the VM's real SITL MAVLink
+  port reachable at 127.0.0.1:5771 on THIS device.
 
   Listens on DEVICE_LISTEN_PORT for mavlink_relay_vm.py to dial in (the
   same "VM dials device" direction every other bridge here already uses),
   and re-exposes whatever it forwards as a plain local TCP server on
   127.0.0.1:SITL_LOCAL_PORT -- exactly the address sitl_addr_list/
   sitl_tcp_port_list and launchSitlDeviceNode's own fcu_url already
-  expect, so neither this file's own probe nor mavros's real persistent
-  connection needed to change at all.
+  expect.
 
   One VM connection and one local (discovery-probe-or-mavros) connection
   relayed at a time, matching the one dedicated --out port SITL itself
@@ -75,18 +69,16 @@ class SitlMavlinkRelay:
   _start_lock = threading.Lock()
   _vm_conn = None
   _vm_conn_lock = threading.Lock()
-  # Guards against exactly the crash confirmed live (2026-09-08): a fresh
+  # Guards against concurrent local relays: a fresh
   # local connection (e.g. checkForTcpDevice's own probe, which can still
   # overlap mavros's own connection attempt for a moment right at the
-  # "not yet active" -> "active" transition) used to get its own relay
-  # thread spawned unconditionally, so TWO local connections could pump
+  # "not yet active" -> "active" transition) given its own relay
+  # thread unconditionally would let TWO local connections pump
   # against the SAME shared vm_conn socket from two threads at once with
   # no coordination -- interleaved reads/writes on one socket from two
   # threads, and one thread's own `finally: local_conn.close()` closing
-  # vm_conn out from under the other. Surfaced as mavros's own tcp0 link
-  # dying with "Connection reset by peer" / "terminate called ... Resource
-  # deadlock avoided" shortly after every launch attempt. Only one local
-  # connection is ever relayed at a time now -- a second one arriving while
+  # vm_conn out from under the other. Only one local
+  # connection is ever relayed at a time -- a second one arriving while
   # the first is still active is closed immediately instead of started.
   _local_active_lock = threading.Lock()
 
@@ -105,13 +97,9 @@ class SitlMavlinkRelay:
     # Explicit, not inherited -- nepi_sdk/rospy sets a process-global
     # socket.setdefaulttimeout(60) (same gotcha sim_bridge_node.py's own
     # bridgeServerLoop already documents), which every plain socket.socket()
-    # call in this SAME process silently inherits. Confirmed live
-    # (2026-09-08): without this, srv.accept() raised socket.timeout after
-    # exactly 60s with no VM connection yet, and since that exception
-    # wasn't caught, it killed this entire thread permanently -- the VM's
-    # mavlink_relay_vm.py then had nothing left to dial into for the rest
-    # of drivers_mgr's life, with no error visible anywhere except this
-    # thread's own now-silent death.
+    # call in this SAME process silently inherits. Without this,
+    # srv.accept() would raise socket.timeout after
+    # exactly 60s with no VM connection yet.
     srv.settimeout(None)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -128,8 +116,7 @@ class SitlMavlinkRelay:
         conn, addr = srv.accept()
       except Exception as e:
         # Self-healing, not fatal -- see this method's own settimeout(None)
-        # comment for why a bare accept() here used to die permanently
-        # instead of just logging and continuing.
+        # comment.
         logger.log_warn("SitlMavlinkRelay: VM-facing accept() error (continuing): " + str(e))
         time.sleep(1.0)
         continue
@@ -197,19 +184,13 @@ class SitlMavlinkRelay:
           pass
         return
       vm_conn_failed = cls._pump(local_conn, vm_conn)
-      # Only tear down vm_conn when IT actually failed -- confirmed live
-      # (2026-09-08) as the real cause of mavros's own "Connection reset by
-      # peer" / "Resource deadlock avoided" crash, which the exclusivity
-      # lock above did NOT fix on its own: checkForTcpDevice's own probe
+      # Only tear down vm_conn when IT actually failed:
+      # checkForTcpDevice's own probe
       # connects, reads one byte, then closes itself every ~2s BY DESIGN
       # (see that method's own comment) -- that is the LOCAL side ending
-      # normally, not vm_conn failing, but the previous version of this
-      # method treated ANY pump() return as "vm_conn is dead" regardless of
-      # which side actually closed, so every single routine probe cycle
-      # destroyed the one shared vm_conn -- including out from under
-      # mavros's own, completely unrelated, still-healthy connection,
-      # forcing mavlink_relay_vm.py's own reconnect and handing mavros a
-      # mid-stream reset. _pump now reports which side actually died so
+      # normally, not vm_conn failing; tearing down the one shared vm_conn then
+      # would hand mavros's own, still-healthy connection a mid-stream reset.
+      # _pump reports which side actually died so
       # only a genuine vm_conn failure clears it here.
       if vm_conn_failed:
         with cls._vm_conn_lock:
@@ -233,11 +214,10 @@ class SitlMavlinkRelay:
     # Returns True only if `b` (vm_conn, by this class's own calling
     # convention -- a is always the local connection) is the side that
     # actually failed; False if only `a` (the local side) closed/errored.
-    # See _relayLocalConn's own comment for why this distinction is the
-    # actual fix -- a plain "did pump() return" signal can't tell a normal,
+    # See _relayLocalConn's own comment for why this distinction matters:
+    # a plain "did pump() return" signal can't tell a normal,
     # expected local-side close (e.g. a probe) apart from a real vm_conn
-    # failure, and conflating them was killing vm_conn (and anything else
-    # relaying through it) on every routine probe cycle.
+    # failure.
     a.setblocking(False)
     b.setblocking(False)
     while True:
@@ -305,11 +285,10 @@ class ArdupilotDiscovery:
   # Mavros (mavlink) launch configuration: mavros's own ArduPilot configs,
   # loaded into the mavros node's namespace before it starts. They ship in the
   # mavros package's launch/ folder (/opt/ros/noetic/share/mavros/launch on an
-  # apt install), so that folder is found through rospack, with the old fixed
-  # /opt/nepi path as a fallback. Found missing live 2026-10-12: only the fixed
-  # path was tried, it did not exist on the device, and rosparam load failed
-  # quietly -- mavros then ran every plugin with defaults, and with no
-  # rangefinder mapping from apm_config.yaml it logged "DS: no mapping for
+  # apt install), so that folder is found through rospack, with the fixed
+  # /opt/nepi path as a fallback. A missing file makes rosparam load fail
+  # quietly -- mavros then runs every plugin with defaults, and with no
+  # rangefinder mapping from apm_config.yaml it logs "DS: no mapping for
   # sensor id" four times a second for SITL's downward rangefinder.
   APM_CONFIG_FILES = ['apm_pluginlists.yaml', 'apm_config.yaml']
   LEGACY_MAVROS_LAUNCH_FOLDER = '/opt/nepi/nepi_engine/share/mavros/launch'
@@ -325,21 +304,20 @@ class ArdupilotDiscovery:
     time.sleep(1)
     self.logger.log_info("Starting Initialization")
 
-    # Requested live 2026-09-16: run a physical (SERIAL) ArduPilot and an
-    # ArduPilot SITL sim concurrently, with Robot Link mirroring commands
-    # between them, instead of the connection option's SERIAL/SITL toggle
-    # being an exclusive either-or. That only works if two driver entries
+    # A physical (SERIAL) ArduPilot and an
+    # ArduPilot SITL sim can run concurrently, with Robot Link mirroring commands
+    # between them.
+    # That only works if two driver entries
     # (e.g. RBX_ARDUPILOT + RBX_ARDUPILOT_SITL, see
     # rbx_ardupilot_sitl_params.yaml) can run this SAME class concurrently
     # without corrupting each other -- drivers_mgr.py caches one
     # ArdupilotDiscovery() instance per driver_name (keyed off each
     # driver's own params yaml pkg_name), so two entries DO get two
     # separate instances. But active_devices_dict/launch_time_dict/
-    # dont_retry_list were declared as CLASS attributes above and never
-    # reassigned here, so every instance mutating them in place
-    # (self.active_devices_dict[x] = ...) was actually reading and writing
-    # the ONE shared class-level dict/list -- undetectable with a single
-    # driver entry (nothing else could ever collide), but two concurrent
+    # dont_retry_list are declared as CLASS attributes above, so an
+    # instance mutating them in place
+    # (self.active_devices_dict[x] = ...) would read and write
+    # the ONE shared class-level dict/list, and two concurrent
     # instances would silently share and corrupt each other's purge/retry/
     # backoff bookkeeping. Shadow each with a real instance attribute so
     # every ArdupilotDiscovery() gets its own.
@@ -367,7 +345,7 @@ class ArdupilotDiscovery:
     except Exception as e:
       self.logger.log_warn("Failed to load options " + str(e))
       # drivers_mgr assigns this return to its active_paths_list; None
-      # replaced that list and broke every later discovery call.
+      # would replace that list and break every later discovery call.
       return self.active_paths_list
 
     # Retry behavior
@@ -436,9 +414,7 @@ class ArdupilotDiscovery:
     # RUN SITL PROCESS (ArduPilot Software-In-The-Loop over TCP)
     elif connection_type == 'SITL':
       # Idempotent -- see SitlMavlinkRelay's own docstring for why this is
-      # needed at all now (the reverse SSH tunnel that used to make the
-      # VM's real SITL MAVLink port transparently reachable at
-      # 127.0.0.1:5771 on this device is gone). Safe to call every
+      # needed. Safe to call every
       # discoveryFunction tick: only actually starts its two listener
       # threads once.
       SitlMavlinkRelay.ensure_started(self.logger)
@@ -464,19 +440,16 @@ class ArdupilotDiscovery:
     # Returns True if the device's mavlink AND ardupilot processes are both
     # still alive and its path is still present.
     #
-    # Originally checked mavlink_subproc alone -- confirmed live (2026-08-11)
-    # that this misses a real, repeatable failure mode: mavros can stay up
+    # Checking mavlink_subproc alone is not enough: mavros can stay up
     # and perfectly healthy while the ardupilot RBX node itself exits (the
     # exact mechanism wasn't pinned down -- rospy's own signal_shutdown
     # [atexit] with no exception logged beforehand, i.e. a clean shutdown
     # from *something*, not a crash) minutes after a successful launch. With
-    # only the mavlink check, that leaves active_devices_dict believing
-    # everything is fine forever after -- nothing purges the stale entry, so
-    # nothing ever retries the launch, and the RBX device panel that
-    # appeared briefly in the RUI's Devices list never comes back on its
-    # own. Checking ardu_subproc (and fake_gps, if this launch enabled it)
-    # the same way closes that gap: any one of the three dying now purges
-    # and retries the whole device, exactly like a mavlink death always did.
+    # only the mavlink check, active_devices_dict would believe
+    # everything is fine forever after and nothing would retry the launch.
+    # Checking ardu_subproc (and fake_gps, if this launch enabled it)
+    # the same way means any one of the three dying purges
+    # and retries the whole device.
     active = True
     if path_str not in self.active_devices_dict.keys():
       return False
@@ -622,13 +595,13 @@ class ArdupilotDiscovery:
     nepi_sdk.set_param(dict_param_name, self.drv_dict)
 
     self.logger.log_info("Starting ardupilot rbx node: " + ardu_node_name)
-    # LD_PRELOAD needed here, not a general drivers_mgr/launchDriverNode fix --
-    # confirmed live (2026-09-08): rbx_ardupilot_node.py crashed on its own
+    # LD_PRELOAD needed here, not in drivers_mgr/launchDriverNode:
+    # rbx_ardupilot_node.py crashes on its own
     # `from nepi_api.device_if_rbx import RBXRobotIF` (-> nepi_pc -> `import
     # open3d`) with "libgomp.so.1: cannot allocate memory in static TLS
-    # block" every single time it was launched this way, while the EXACT
-    # SAME import in a plain `python3 -c` shell succeeded fine -- narrowed
-    # to import ORDER: this script's own `import cv2` (line ~28, well before
+    # block" when launched this way, while the EXACT
+    # SAME import in a plain `python3 -c` shell succeeds. The cause is
+    # import ORDER: this script's own `import cv2` (line ~28, well before
     # device_if_rbx) already claims libgomp's static TLS slot via OpenCV's
     # own OpenMP/BLAS backend on this aarch64 build, leaving none for
     # open3d's own later, separate use of the same library. Preloading
@@ -779,24 +752,10 @@ class ArdupilotDiscovery:
         # are reached through a reverse SSH tunnel, where the listening socket
         # belongs to the local sshd: sshd accepts first and only then tries to
         # reach the far end, so connect() succeeds against a completely dead
-        # simulator. rbx_sim_discovery.py already learned this and requires a
-        # real reply from its heartbeat listener; this probe never got the same
-        # treatment, and the consequences were severe.
+        # simulator.
         #
-        # With connect-only, a dead SITL looked present forever, so discovery
-        # relaunched mavros into a dead endpoint in an endless ~2 s loop:
-        # mavros hit "tcp0: receive: End of file" and aborted with
-        # "std::system_error: Resource deadlock avoided", checkOnDevice saw the
-        # dead mavlink process and purged, taking the ardupilot RBX node with
-        # it, then relaunched both. The RBX node never survived long enough to
-        # finish RBXRobotIF init, so it never registered its own subscribers --
-        # /rbx/setup_action had "Subscribers: None" -- and every LAUNCH/TAKEOFF
-        # published from the RUI went nowhere at all, silently. Quick one-shot
-        # motor commands could still land in a lucky window, which is exactly
-        # the reported symptom: "the manual motor commands seem to work, but
-        # the command to actually make it fly in the air doesn't". Autonomous
-        # controls then stay locked too, since autonomousControlsReady()
-        # requires takeoff_complete.
+        # With connect-only, a dead SITL would look present forever, so discovery
+        # would relaunch mavros into a dead endpoint in an endless ~2 s loop.
         #
         # Requiring actual MAVLink traffic distinguishes the two. A live
         # SITL/MAVProxy endpoint streams heartbeats continuously, so bytes

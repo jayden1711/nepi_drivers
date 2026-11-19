@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 import os
 import copy
@@ -91,7 +93,7 @@ class IqrPanTiltNode:
     FACTORY_LIMITS_DICT['max_tilt_softstop_deg'] = 60
     
 
-    # A copy: as the same dict, every soft-limit change also rewrote the factory
+    # A copy: as the same dict, every soft-limit change would also rewrite the factory
     # limits that setSoftLimits clamps against, so a narrowed limit could not be
     # widened again until restart
     limits_dict = copy.deepcopy(FACTORY_LIMITS_DICT)
@@ -259,7 +261,7 @@ class IqrPanTiltNode:
             # PTX controls, not settings. PTXActuatorIF also accepts a
             # getCapSettingsFunction argument, but that argument is inert --
             # it is never forwarded to SettingsIF, which has no such parameter;
-            # a control's type, bounds and options now ride in the controls
+            # a control's type, bounds and options ride in the controls
             # dict itself.
 
             self.home_pan_deg = 0.0
@@ -702,7 +704,7 @@ class IqrPanTiltNode:
 
     def driver_moveToPosition(self,pan, tilt):
         # Returns True once the command is sent. The jog functions run their timed
-        # stop only on success, so returning None sent every timed jog on to the soft limit.
+        # stop only on success.
         if pan < -60.0 or pan > 60.0:
             return False
         if tilt < -60.0 or tilt > 60.0:

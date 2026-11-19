@@ -2,10 +2,11 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License",
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
 # Redistributions in source code must retain this top-level comment block.
@@ -475,12 +476,12 @@ class GazeboNode:
     ## Point the interface's image-source search at this instance's own
     ## device_name-qualified topic, overriding the factory default and any stale
     ## persisted config on every startup, for deterministic per-instance behavior.
-    ## 3.4: RBXRobotIF has no setImageTopicCb; its image source is the
+    ## RBXRobotIF has no setImageTopicCb; its image source is the
     ## connect_img_if (ConnectColorImageIF) selection. set_selected_topic
     ## quietly rejects a topic the connect has not discovered yet, so the
     ## robot_color image IF's topic is selected by selectOwnImageCb once the
     ## connect has discovered it. The raw sensor_msgs/Image topic is not a
-    ## NEPI image data product, so it is no longer selected.
+    ## NEPI image data product, so it is not selected.
     nepi_sdk.start_timer_process(1.0, self.selectOwnImageCb, oneshot = True)
 
     ## Start the closed-loop goto controller
@@ -548,7 +549,7 @@ class GazeboNode:
       if 'options' in cap_setting.keys():
         try:
           if setting_type == 'Int':
-            # An Int/Float control's min and max used to ride in the same
+            # CAP_SETTINGS carries an Int/Float control's min and max in an
             # 'options' pair. The controls contract calls that 'bounds'.
             setting_dict['bounds'] = [int(cap_setting['options'][0]),int(cap_setting['options'][1])]
           elif setting_type == 'Float':
@@ -600,7 +601,7 @@ class GazeboNode:
     if setting_name not in self.settings_dict.keys():
       msg = (self.node_name + " Setting name " + setting_str + " is not supported")
       return False, msg, self.settings_dict
-    # check_valid_value() was removed from nepi_controls; get_clean_value()
+    # get_clean_value()
     # returns None for an invalid value. Test 'is None', not falsiness -- a
     # Toggle cleans to a legitimate False.
     if nepi_controls.get_clean_value(self.settings_dict, setting_name, setting_value) is None:
@@ -712,7 +713,6 @@ class GazeboNode:
     self.setMotorControlRatio(motor_ind, 0.0)
 
   def runMotorSvx(self, motor_ind, signed_ratio):
-    # Same gate the RBX interface applied to set_motor_control before 3.4
     if self.motor_svx_cmds_enabled == False:
       return False
     if self.manualControlsReady() != True:
@@ -828,8 +828,8 @@ class GazeboNode:
 
   def selectOwnImageCb(self, timer):
     # Select the robot_color image IF as the RBX image source once the
-    # connect has discovered it. Like the raw-topic selection this replaces,
-    # it overrides any persisted selection every startup; the operator can
+    # connect has discovered it.
+    # It overrides any persisted selection every startup; the operator can
     # pick another source afterwards. Gives up after a bounded number of tries.
     if self.robot_color_if is None or self.rbx_if is None or nepi_sdk.is_shutdown():
       return
@@ -878,7 +878,7 @@ class GazeboNode:
     # local ENU x/y/z meters. See processTelemetryLine's matching latitude /
     # longitude / altitude_m reinterpretation, which is what makes "use current
     # position as home" capture the real position instead of always reading back
-    # (0, 0, 0), with zero shared-API changes.
+    # (0, 0, 0).
     home = GeoPoint()
     home.latitude = self.home_x_m
     home.longitude = self.home_y_m

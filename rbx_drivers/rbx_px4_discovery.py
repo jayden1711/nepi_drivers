@@ -2,10 +2,11 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License",
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
 # Redistributions in source code must retain this top-level comment block.
@@ -216,7 +217,7 @@ class PX4Discovery:
   # Mavros (mavlink) launch configuration: mavros's own PX4 configs, loaded
   # into the mavros node's namespace before it starts. They ship next to the
   # apm_*.yaml files in the mavros package's launch/ folder, found through
-  # rospack with the old fixed /opt/nepi path as a fallback, the same way
+  # rospack with the fixed /opt/nepi path as a fallback, the same way
   # rbx_ardupilot_discovery.py finds its APM configs.
   PX4_CONFIG_FILES = ['px4_pluginlists.yaml', 'px4_config.yaml']
   LEGACY_MAVROS_LAUNCH_FOLDER = '/opt/nepi/nepi_engine/share/mavros/launch'

@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License",
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 # SVX (servo) node for the Pololu Micro Maestro USB servo controller.
 #
@@ -693,7 +695,7 @@ class SvxServoMaestroNode:
     # Pure linear map; reverse-axis handling lives in the SVX IF, not here.
 
     def deg2us(self, deg):
-        # The degree span is a live setting now, so guard the division rather
+        # The degree span is a live setting, so guard the division rather
         # than trust the value. setDegRange() enforces MIN_DEG_SPAN, which makes
         # this unreachable -- but an unreachable guard is cheaper than a
         # ZeroDivisionError on every move command if that ever stops being true.

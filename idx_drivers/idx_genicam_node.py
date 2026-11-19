@@ -2,18 +2,20 @@
 #
 # Copyright (c) 2024 Numurus <https://www.numurus.com>.
 #
-# This file is part of nepi applications (nepi_drivers) repo
-# (see https://https://github.com/nepi-engine/nepi_drivers)
+# This file is part of nepi drivers (nepi_drivers) repo
+# (see https://github.com/nepi-engine/nepi_drivers)
 #
-# License: nepi applications are licensed under the "Numurus Software License", 
+# License: NEPI Drivers repo source-code and NEPI Images that use this source-code
+# are licensed under the "Numurus Software License",
 # which can be found at: <https://numurus.com/wp-content/uploads/Numurus-Software-License-Terms.pdf>
 #
-# Redistributions in source code must retain this top-level comment bstab.
+# Redistributions in source code must retain this top-level comment block.
 # Plagiarizing this software to sidestep the license obligations is illegal.
 #
 # Contact Information:
 # ====================
 # - mailto:nepi@numurus.com
+#
 
 import sys
 import copy
@@ -192,8 +194,7 @@ class GenicamCamNode:
             elif setting_type == 'bool':
                 setting_type = 'Toggle'
             elif setting_type == 'enum':
-                # The retired cap-settings form called this 'Discrete'. The
-                # controls contract has no Discrete type; a named option list
+                # The controls contract has no Discrete type; a named option list
                 # is a Selection.
                 setting_type = 'Selection'
             else:
@@ -249,9 +250,8 @@ class GenicamCamNode:
         try:
             [success,framerates] = self.driver.getCurrentResolutionAvailableFramerates()
             if success == True and len(framerates) > 0:
-                # Framerate stays a Float, as it has always been. The old cap
-                # form carried the discrete rate list in an 'options' key that
-                # a Float control has no place for, so the same list becomes
+                # Framerate is a Float. A Float control has no 'options' key, so
+                # the discrete rate list becomes
                 # the control's bounds.
                 rates = [float(rate) for rate in framerates]
                 setting_dict = dict()
