@@ -439,6 +439,11 @@ class IqrPanTiltNode:
         navpose_dict['roll_deg'] = 0.0
         navpose_dict['yaw_deg'] = pan_deg * self.PAN_DEG_DIR
         navpose_dict['pitch_deg'] = tilt_deg * self.TILT_DEG_DIR
+
+        navpose_dict['has_pan_tilt'] = True
+        navpose_dict['time_pan_tilt'] = nepi_utils.get_time()
+        navpose_dict['pan_deg'] = pan_deg * self.PAN_DEG_DIR
+        navpose_dict['tilt_deg'] = tilt_deg * self.TILT_DEG_DIR
         return navpose_dict
 
     #**********************
