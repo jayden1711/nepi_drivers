@@ -49,13 +49,18 @@ class SidusSS182SerialDiscovery:
 
   data_len = 4
 
-  # The light answers a DSN read within a few character times at 9600 baud,
-  # so a short per-address wait keeps a silent port cheap. drivers_mgr runs
-  # every driver's discoveryFunction in turn on one thread.
-  PROBE_REPLY_TIMEOUT_SEC = 0.3
+  # Measured on an SS182mkII at 9600 baud: a DSN reply arrives 0.1 to 0.86 s
+  # after the command. drivers_mgr runs every driver's discoveryFunction in
+  # turn on one thread, so a silent port costs this wait per probe.
+  PROBE_REPLY_TIMEOUT_SEC = 1.2
   PORT_READ_TIMEOUT_SEC = 0.05
   # A port that answered nothing is re-probed at this interval, not every cycle.
-  SILENT_RETRY_SEC = 30.0
+  SILENT_RETRY_SEC = 60.0
+  # The factory baud. With every baud selected, each pass probes it plus one
+  # other baud in turn. A probe at the wrong baud reaches the light as garbage
+  # that can swallow the next command, so the first probe at each baud of a
+  # multi-baud pass is sent twice.
+  DEFAULT_BAUD = '9600'
   # A node that exits soon after launch is not relaunched until this has passed.
   NODE_LOAD_TIME_SEC = 10
 
@@ -90,6 +95,7 @@ class SidusSS182SerialDiscovery:
     self.active_devices_dict = dict()
     self.launch_time_dict = dict()
     self.silent_ports_dict = dict() # path_str: time of the last probe that got no reply
+    self.baud_rotation_dict = dict() # path_str: index of the next non-default baud to probe
     self.retry = True
     self.logger.log_info("Initialization Complete")
 
@@ -217,6 +223,20 @@ class SidusSS182SerialDiscovery:
     return bridge_paths
 
 
+  def getProbeBaudList(self,path_str):
+    if len(self.baudrate_list) <= 1:
+      return list(self.baudrate_list)
+    probe_list = []
+    if self.DEFAULT_BAUD in self.baudrate_list:
+      probe_list.append(self.DEFAULT_BAUD)
+    others = [baud for baud in self.baudrate_list if baud != self.DEFAULT_BAUD]
+    if len(others) > 0:
+      ind = self.baud_rotation_dict.get(path_str, 0) % len(others)
+      self.baud_rotation_dict[path_str] = ind + 1
+      probe_list.append(others[ind])
+    return probe_list
+
+
   def getFrame(self,line,prefix):
     # A reply is 10 characters from its prefix: & addr MNE DATA R/W. A glitch
     # byte from the RS485 turnaround can sit ahead of it on the same line.
@@ -255,7 +275,9 @@ class SidusSS182SerialDiscovery:
     found_device = False
     if path_str in self.active_paths_list:
       return found_device
-    for baud_str in self.baudrate_list:
+    probe_baud_list = self.getProbeBaudList(path_str)
+    multi_baud = len(probe_baud_list) > 1
+    for baud_str in probe_baud_list:
       try:
         # Try and open serial port. exclusive takes a flock, so a port some
         # other process holds under flock fails to open here instead of
@@ -266,7 +288,8 @@ class SidusSS182SerialDiscovery:
         return found_device
       #################################################
       try:
-        for addr_str in self.addr_search_list:
+        port_error = False
+        for addr_ind, addr_str in enumerate(self.addr_search_list):
           data_str = ''
           for i in range(self.data_len):
             data_str = data_str + '0'
@@ -274,15 +297,23 @@ class SidusSS182SerialDiscovery:
           ser_str = (ser_msg + '\r\n')
           ################################################
           # Send Serial String
-          self.logger.log_debug("Sending serial message: " + ser_msg + " on " + path_str + " at " + baud_str)
           b=bytearray()
           b.extend(map(ord, ser_str))
-          try:
-            serial_port.reset_input_buffer()
-            serial_port.write(b)
-            response = self.readProbeReply(serial_port,ser_msg[0:5],self.PROBE_REPLY_TIMEOUT_SEC)
-          except Exception as e:
-            self.logger.log_info("Got a serial read/write error on " + path_str + ": " + str(e))
+          tries = 2 if (multi_baud and addr_ind == 0) else 1
+          response = None
+          for try_ind in range(tries):
+            self.logger.log_debug("Sending serial message: " + ser_msg + " on " + path_str + " at " + baud_str)
+            try:
+              serial_port.reset_input_buffer()
+              serial_port.write(b)
+              response = self.readProbeReply(serial_port,ser_msg[0:5],self.PROBE_REPLY_TIMEOUT_SEC)
+            except Exception as e:
+              self.logger.log_info("Got a serial read/write error on " + path_str + ": " + str(e))
+              port_error = True
+              break
+            if response is not None:
+              break
+          if port_error:
             break
           self.logger.log_debug("Got response: " + str(response))
           # A reply carrying ERRn in its DATA still identifies the light
@@ -306,7 +337,7 @@ class SidusSS182SerialDiscovery:
       self.silent_ports_dict.pop(path_str, None)
     else:
       if path_str not in self.silent_ports_dict.keys():
-        self.logger.log_info("No SS182 light answered on " + path_str + " at " + ", ".join(self.baudrate_list) +
+        self.logger.log_info("No SS182 light answered on " + path_str + " at " + ", ".join(probe_baud_list) +
                              " baud -- will re-check it every " + str(int(self.SILENT_RETRY_SEC)) + " s")
       self.silent_ports_dict[path_str] = nepi_sdk.get_time()
     return found_device

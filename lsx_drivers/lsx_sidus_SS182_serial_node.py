@@ -85,12 +85,24 @@ class SidusSS182SerialNode(object):
   blink_enabled = False
   )
 
-  # Serial timing. The reply is sent after the command executes and a NAK can
-  # take up to 1 s; the bus is half-duplex RS485, so nothing is sent before the
-  # reply or this timeout. send_msg loops short reads up to the reply timeout.
-  REPLY_TIMEOUT_SEC = 1.0
+  # Serial timing, measured on an SS182mkII at 9600 baud. A reply arrives 0.1
+  # to 0.86 s after the command (the manual allows up to 1 s for a NAK), and
+  # the light ignores a command that arrives within about 0.5 s of its previous
+  # reply; after a 1.0 s quiet gap it always answered. send_msg waits out
+  # QUIET_SEC after every transaction, so the bus carries one command every
+  # 1.5 to 2.5 s.
+  REPLY_TIMEOUT_SEC = 1.5
+  QUIET_SEC = 1.0
   SERIAL_READ_TIMEOUT_SEC = 0.1
-  CHECK_INTERVAL_SEC = 1.0
+  # The check timer sends a pending on/off or intensity change as soon as the
+  # bus is free, and otherwise reads the temperature every POLL_INTERVAL_SEC.
+  CHECK_INTERVAL_SEC = 0.25
+  POLL_INTERVAL_SEC = 3.0
+  # The power-on intensity (LPO) follows the last level the light was on at,
+  # so after a power cycle it comes back at that brightness before NEPI
+  # connects. It is written once the level has been steady this long, so a
+  # slider drag does not queue writes to the light's memory.
+  LPO_SETTLE_SEC = 5.0
   ALARM_LOG_THROTTLE_SEC = 10
 
   # Reply DATA codes. ERR0-3 reject the command. ERR4-9 are health alarms: while
@@ -145,6 +157,17 @@ class SidusSS182SerialNode(object):
   strobe_state = False
 
   temp_c = TEMP_SENTINEL
+
+  # Light state the light last confirmed; None until known. The light turns
+  # itself on at power-up and no command reads whether it is on.
+  applied_on = None
+  applied_level = None
+  applied_lpo = None   # power-on intensity on the light, read at connect
+  last_on_level = None # last level above 0 the light was on at
+  last_on_time = 0.0
+  rejected_action = None # an ERR0-3 rejected command, not resent until the request changes
+  last_bus_end = 0.0
+  last_poll_time = 0.0
 
   self_check_count = 5
   self_check_counter = 0 # track sequencial message failures
@@ -381,7 +404,6 @@ class SidusSS182SerialNode(object):
     if percent is None:
       return False
     self.min_intensity_percent = percent
-    self.reapplyIntensity()
     return True
 
 
@@ -394,7 +416,6 @@ class SidusSS182SerialNode(object):
     if percent is None:
       return False
     self.max_intensity_percent = percent
-    self.reapplyIntensity()
     return True
 
 
@@ -408,13 +429,6 @@ class SidusSS182SerialNode(object):
       self.msg_if.pub_warn("Intensity percent setting must be 1 to 100, got: " + str(val))
       return None
     return percent
-
-
-  def reapplyIntensity(self):
-    # A new min or max moves the level the current target maps to
-    if self.on_off_state == True and self.serial_port is not None:
-      with self.control_lock:
-        self.setIntensityFunction(self.target_ratio)
 
 
   def getIntensityRange(self):
@@ -436,25 +450,14 @@ class SidusSS182SerialNode(object):
     return max(0, min(level, self.full_scale))
 
 
-  def levelToRatio(self, level):
-    if level <= 0:
-      return 0.0
-    [min_percent, max_percent] = self.getIntensityRange()
-    if max_percent <= min_percent:
-      return 1.0
-    percent = 100.0 * float(level) / float(self.full_scale)
-    ratio = (percent - min_percent) / (max_percent - min_percent)
-    return max(0.0, min(ratio, 1.0))
-
-
 
   #######################
   ### LSX IF Get Status Function
 
   ### Status callback
   def getStatus(self):
-    # update status values from device
-    success=self.update_status_values()
+    # No serial traffic here: LSXDeviceIF calls this at 1 Hz and one
+    # transaction takes 1.5 to 2.5 s. The check timer keeps the values current.
     # Create LSX status message
     status_msg= DeviceLSXStatus()
     status_msg.device_node_name = self.node_name
@@ -476,30 +479,21 @@ class SidusSS182SerialNode(object):
 
 
   def update_status_values(self):
-    """Read the intensity and housing temperature from the light.
+    """Read the housing temperature from the light.
 
-    While the light is on, intensity_ratio is the last good LIN read mapped
-    back through the min and max intensity settings; while off it is the
-    stored target. temp_c is the DTM 0003 housing temperature. A failed read
-    or an active health alarm keeps the last good value.
+    Called from the check timer, never from getStatus. temp_c is the DTM 0003
+    housing temperature; a failed read or an active health alarm keeps the
+    last good value.
 
     Returns:
-        bool: True if every read returned a usable value.
+        bool: True if the light answered, including with an alarm or a
+            rejection; False on a timeout.
     """
-    success = True
-    # Update intensity_ratio status
-    if self.on_off_state == True:
-      level = self.readInt('LIN')
-      if level is not None:
-        self.intensity_ratio = self.levelToRatio(level)
-      else:
-        success = False
-    else:
-      self.intensity_ratio = self.target_ratio
-
-    # Update temp status, DTM 0003 is the current housing temperature
+    # DTM 0003 is the current housing temperature
     ser_msg = ('&' + self.addr_str + 'DTM' + self.create_zero_prefix_str(3) + 'R')
     response = self.send_msg(ser_msg)
+    if response is None:
+      return False
     temp_c = None
     if self.getReplyData(ser_msg, response) is not None:
       try:
@@ -508,87 +502,117 @@ class SidusSS182SerialNode(object):
         self.msg_if.pub_warn("Temperature reply was not a number: " + str(response), throttle_s = 10)
     if temp_c is not None and temp_c >= self.TEMP_MIN_C and temp_c <= self.TEMP_MAX_C:
       self.temp_c = temp_c
-    else:
-      success = False
-    return success
+    return True
 
   #######################
   ### LSX IF Interface Functions
+  # These only store the request. The check timer sends LIN, LON or LOF as
+  # soon as the bus is free, so a slider drag becomes one LIN write of the
+  # latest value instead of a queue of 2 s transactions.
   def turnOnOff(self,turn_on_off):
     with self.control_lock:
-      success = False
-      if turn_on_off == True:
-        # LON turns the LED on at the stored LIN, so write the target level first
-        success = self.setIntensityFunction(self.target_ratio)
-        if success == True:
-          success = self.setOnFunction()
-      else:
-        success = self.setOffFunction()
-      if success == True:
-        self.on_off_state = (turn_on_off == True)
-        if self.on_off_state == False:
-          self.intensity_ratio = self.target_ratio
-      else:
-        self.msg_if.pub_warn("Light did not confirm turning " + ("on" if turn_on_off else "off"))
-      return success
+      self.on_off_state = (turn_on_off == True)
+      self.rejected_action = None
+    return True
 
 
   def setIntensityRatio(self,intensity_ratio):
+    try:
+      intensity_ratio = float(intensity_ratio)
+    except Exception:
+      self.msg_if.pub_warn("Intensity ratio is not a number: " + str(intensity_ratio))
+      return False
+    if intensity_ratio < 0:
+      intensity_ratio = 0.0
+    elif intensity_ratio > 1:
+      intensity_ratio = 1.0
     with self.control_lock:
-      success = False
-      if intensity_ratio < 0:
-        intensity_ratio = 0
-      elif intensity_ratio > 1:
-        intensity_ratio = 1
       self.target_ratio = intensity_ratio
-      if self.on_off_state == True:
-        success = self.setIntensityFunction(intensity_ratio)
+      self.intensity_ratio = intensity_ratio
+      self.rejected_action = None
+    return True
+
+
+  def getPendingAction(self):
+    # The next command that brings the light to the requested state, or None.
+    # While off the target level is only stored, because the manual disagrees
+    # on whether a LIN write turns the LED on; it is written before LON.
+    with self.control_lock:
+      want_on = self.on_off_state
+      level = self.ratioToLevel(self.target_ratio)
+    actions = []
+    if want_on == True:
+      if self.applied_level != level:
+        actions.append(('LIN', level))
+      if self.applied_on != True:
+        actions.append(('LON', 0))
+    elif self.applied_on != False:
+      actions.append(('LOF', 0))
+    if (len(actions) == 0 and self.last_on_level is not None and self.last_on_level != self.applied_lpo and
+        (time.monotonic() - self.last_on_time) >= self.LPO_SETTLE_SEC):
+      actions.append(('LPO', self.last_on_level))
+    for action in actions:
+      if action != self.rejected_action:
+        return action
+    return None
+
+
+  def applyAction(self, action):
+    # Sends one LIN, LON, LOF or LPO. Returns False only when the light did
+    # not answer at all.
+    [mnemonic, level] = action
+    if mnemonic in ('LIN', 'LPO'):
+      ser_msg = ('&' + self.addr_str + mnemonic + self.create_zero_prefix_str(level) + 'W')
+    else:
+      ser_msg = ('&' + self.addr_str + mnemonic + self.create_blank_str() + 'W')
+    response = self.send_msg(ser_msg)
+    if response is None:
+      return False
+    if self.checkValidResponse(ser_msg, response) == True:
+      if mnemonic == 'LIN':
+        self.applied_level = level
+      elif mnemonic == 'LPO':
+        self.applied_lpo = level
       else:
-        # The manual disagrees on whether a LIN write turns the LED on, so
-        # while off the target is only stored. turnOnOff writes it before LON.
-        self.intensity_ratio = intensity_ratio
-        success = True
-      return success
-
-  def setIntensityFunction(self,intensity_ratio):
-    level = self.ratioToLevel(intensity_ratio)
-    ser_msg = ('&' + self.addr_str + 'LIN' + self.create_zero_prefix_str(level) + "W")
-    response = self.send_msg(ser_msg)
-    return self.checkValidResponse(ser_msg, response)
-
-  def setOnFunction(self):
-    ser_msg = ('&' + self.addr_str + 'LON' + self.create_blank_str() + "W")
-    response = self.send_msg(ser_msg)
-    return self.checkValidResponse(ser_msg, response)
-
-  def setOffFunction(self):
-    ser_msg = ('&' + self.addr_str + 'LOF' + self.create_blank_str() + "W")
-    response = self.send_msg(ser_msg)
-    return self.checkValidResponse(ser_msg, response)
+        self.applied_on = (mnemonic == 'LON')
+      if mnemonic in ('LIN', 'LON') and self.applied_on == True and self.applied_level is not None and self.applied_level > 0:
+        self.last_on_level = self.applied_level
+        self.last_on_time = time.monotonic()
+      self.rejected_action = None
+    else:
+      self.rejected_action = action
+    return True
 
   #######################
   ### Class Functions
   def check_timer_callback(self, timer):
-      """Heartbeat timer callback: read DSN and count missed replies.
+      """Apply requested light changes, poll status, and count missed replies.
 
-      Any reply frame, including one carrying a health alarm or a command
-      error, counts as alive. Only a timeout or garbage counts as a failure,
-      and the node shuts down after more than self_check_count failures in a
-      row so discovery can re-probe the port.
+      Each call sends at most one command. A pending on/off or intensity change
+      goes first; otherwise the housing temperature is read once every
+      POLL_INTERVAL_SEC. Any reply frame counts as alive, including one
+      carrying a health alarm or a rejection. Only a timeout counts as a
+      failure, and the node shuts down after more than self_check_count
+      failures in a row so discovery can re-probe the port.
 
       Args:
           timer: The timer event passed by the timer process. Unused.
       """
-      if nepi_sdk.is_shutdown():
+      if nepi_sdk.is_shutdown() or self.serial_port is None:
           return
-      ser_msg = ('&' + self.addr_str + 'DSN' + self.create_blank_str() + 'R')
-      response = self.send_msg(ser_msg)
-      if response is not None:
-          self.checkValidResponse(ser_msg, response) # logs an active alarm
+      action = self.getPendingAction()
+      if action is not None:
+          answered = self.applyAction(action)
+      elif (time.monotonic() - self.last_poll_time) >= self.POLL_INTERVAL_SEC:
+          self.last_poll_time = time.monotonic()
+          answered = self.update_status_values()
+      else:
+          return
+      if answered == True:
           self.self_check_counter = 0
       else:
           self.self_check_counter = self.self_check_counter + 1
-          self.msg_if.pub_warn("No heartbeat reply from light at address " + self.addr_str + " on " + self.port_str +
+          self.msg_if.pub_warn("No reply from light at address " + self.addr_str + " on " + self.port_str +
                                " (" + str(self.self_check_counter) + " in a row)")
 
       if self.self_check_counter > self.self_check_count:
@@ -682,9 +706,11 @@ class SidusSS182SerialNode(object):
           self.msg_if.pub_warn("Could not read intensity scale (LIR " + str(lir) + "), using 0 to " + str(self.full_scale))
       self.max_level = self.readInt('LMX')
       self.limit_level = self.readInt('LIL')
+      self.applied_lpo = self.readInt('LPO')
       self.msg_if.pub_info("Intensity scale 0 to " + str(self.full_scale) +
                            ", operator maximum (LMX) " + str(self.max_level) +
-                           ", factory limit (LIL) " + str(self.limit_level))
+                           ", factory limit (LIL) " + str(self.limit_level) +
+                           ", power-on intensity (LPO) " + str(self.applied_lpo))
 
 
   def send_msg(self,ser_msg):
@@ -692,7 +718,9 @@ class SidusSS182SerialNode(object):
 
     Holds the serial lock for the whole write-and-read transaction, so no
     command goes out on the half-duplex bus before the previous reply or its
-    timeout. Clears the input buffer, writes the command with CR LF, and reads
+    timeout, and waits until QUIET_SEC has passed since the previous
+    transaction ended, because the light ignores a command sent too soon
+    after its last reply. Clears the input buffer, writes the command with CR LF, and reads
     lines until one carries the command's '&' + address + mnemonic prefix.
     Banner and noise lines are discarded, and any verbose acknowledgement lines
     that follow the frame are consumed.
@@ -711,6 +739,9 @@ class SidusSS182SerialNode(object):
     b=bytearray()
     b.extend(map(ord, ser_str))
     with self.serial_lock:
+      wait_sec = self.last_bus_end + self.QUIET_SEC - time.monotonic()
+      if wait_sec > 0:
+        time.sleep(wait_sec)
       try:
         self.serial_port.reset_input_buffer()
         self.serial_port.write(b)
@@ -720,6 +751,7 @@ class SidusSS182SerialNode(object):
       except Exception as e:
         self.msg_if.pub_warn("Serial transaction failed for " + ser_msg + " (" + str(e) + ")", throttle_s = 5)
         response = None
+      self.last_bus_end = time.monotonic()
     return response
 
 
@@ -898,7 +930,7 @@ class SidusSS182SerialNode(object):
     self.msg_if.pub_info("Shutting down: Executing script cleanup actions")
     locked = False
     if self.serial_lock is not None:
-      locked = self.serial_lock.acquire(timeout = 2 * self.REPLY_TIMEOUT_SEC)
+      locked = self.serial_lock.acquire(timeout = 2 * self.REPLY_TIMEOUT_SEC + self.QUIET_SEC)
     try:
       self.closePort()
     finally:
