@@ -543,9 +543,14 @@ class ServosPTXNode:
         # the label the Servo Device page uses, rather than its full SVX topic, which
         # is too wide for the settings panel. Selections are still held and pushed as
         # topics; getServoTopic maps a name coming back from the settings panel.
+        # The label is the namespace below the device: <node> for a node with one
+        # servo, <node>/pan for one of several on a node.
         name = str(topic)
         if name.endswith('/svx'):
             name = name[:-len('/svx')]
+        device_prefix = (self.base_namespace + '/').lower()
+        if name.lower().startswith(device_prefix):
+            return name[len(device_prefix):]
         return name.split('/')[-1]
 
     def getServoTopic(self, name):

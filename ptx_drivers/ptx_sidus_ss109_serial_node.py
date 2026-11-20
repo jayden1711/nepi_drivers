@@ -37,6 +37,7 @@ from nepi_sdk import nepi_nav
 
 from nepi_api.device_if_ptx import PTXActuatorIF
 from nepi_api.device_if_npx import NPXDeviceIF
+from nepi_api.device_if_svx import DeviceSVXIF
 from nepi_api.messages_if import MsgIF
 
 
@@ -123,6 +124,8 @@ class SidusSS109SerialPTXNode:
     hw_version = "Unknown"
     sw_version = "Unknown"
     ptx_if = None
+    svx_pan_if = None
+    svx_tilt_if = None
 
     both_str = '!'
     pan_str = '#'
@@ -295,6 +298,89 @@ class SidusSS109SerialPTXNode:
                 connect_navpose_if = self.ptx_if.connect_navpose_if
                 )
 
+            ##################################
+            # Setup Pan and Tilt SVX IF Classes ####################
+            # Each axis is also its own servo device, driven from the Servo devices
+            # page. Both share the PTX interface's node_if, settings_if, save_data_if
+            # and connect_navpose_if. Each passes its own namespace, so the servos land
+            # at <node>/pan/svx and <node>/tilt/svx with separate topics, saved params
+            # and node_if registry keys. Unlike the IQR, the SS109 takes speed and soft
+            # limits per axis, so each servo sets only its own axis. Neither publishes
+            # navpose of its own; the NPX device above does.
+            self.msg_if.pub_info("Launching NEPI SVX pan and tilt axis interfaces...")
+            pan_device_info = copy.deepcopy(self.device_info_dict)
+            pan_device_info["device_name"] = self.device_info_dict["device_name"] + "_pan"
+            self.svx_pan_if = DeviceSVXIF(device_info = pan_device_info,
+                                        is_rotate = True,
+                                        has_pan_control = True,
+                                        # Both axes are built into the unit, so they are
+                                        # always connected and get no Servo Connected toggle
+                                        always_connected = True,
+                                        # DeviceSVXIF is unitless: its limit keys carry no _deg
+                                        factoryLimits = {
+                                            'min_hardstop': self.LIMITS_DICT['min_pan_hardstop_deg'],
+                                            'max_hardstop': self.LIMITS_DICT['max_pan_hardstop_deg'],
+                                            'min_softstop': self.LIMITS_DICT['min_pan_softstop_deg'],
+                                            'max_softstop': self.LIMITS_DICT['max_pan_softstop_deg']},
+                                        stopMovingCb = self.stopPan,
+                                        moveCb = self.movePan,
+                                        moveSpeedRatioCb = self.movePanSpeedRatio,
+                                        gotoPositionCb = self.gotoPanPosition,
+                                        getPositionCb = self.getPanPosition,
+                                        getPositionTimesCb = self.getPanPositionTime,
+                                        setSoftLimitsCb = self.setPanSoftLimits,
+                                        getSoftLimitsCb = self.getPanSoftLimits,
+                                        getSpeedMaxCb = self.getSpeedMax,
+                                        setSpeedRatioCb = self.setPanSpeedRatio,
+                                        getSpeedRatioCb = self.getPanSpeedRatio,
+                                        goHomeCb = self.goPanHome,
+                                        setHomePositionCb = self.setPanHomePosition,
+                                        setHomePositionHereCb = self.setPanHomePositionHere,
+                                        navpose_update_rate = self.MAX_POSITION_UPDATE_RATE,
+                                        msg_if = self.msg_if,
+                                        node_if = self.ptx_if.node_if,
+                                        settings_if = self.ptx_if.settings_if,
+                                        save_data_if = self.ptx_if.save_data_if,
+                                        connect_navpose_if = self.ptx_if.connect_navpose_if,
+                                        namespace = nepi_sdk.create_namespace(self.node_namespace, 'pan')
+                                        )
+
+            tilt_device_info = copy.deepcopy(self.device_info_dict)
+            tilt_device_info["device_name"] = self.device_info_dict["device_name"] + "_tilt"
+            self.svx_tilt_if = DeviceSVXIF(device_info = tilt_device_info,
+                                        is_rotate = True,
+                                        has_tilt_control = True,
+                                        always_connected = True,
+                                        # DeviceSVXIF is unitless: its limit keys carry no _deg
+                                        factoryLimits = {
+                                            'min_hardstop': self.LIMITS_DICT['min_tilt_hardstop_deg'],
+                                            'max_hardstop': self.LIMITS_DICT['max_tilt_hardstop_deg'],
+                                            'min_softstop': self.LIMITS_DICT['min_tilt_softstop_deg'],
+                                            'max_softstop': self.LIMITS_DICT['max_tilt_softstop_deg']},
+                                        stopMovingCb = self.stopTilt,
+                                        moveCb = self.moveTilt,
+                                        moveSpeedRatioCb = self.moveTiltSpeedRatio,
+                                        gotoPositionCb = self.gotoTiltPosition,
+                                        getPositionCb = self.getTiltPosition,
+                                        getPositionTimesCb = self.getTiltPositionTime,
+                                        setSoftLimitsCb = self.setTiltSoftLimits,
+                                        getSoftLimitsCb = self.getTiltSoftLimits,
+                                        getSpeedMaxCb = self.getSpeedMax,
+                                        setSpeedRatioCb = self.setTiltSpeedRatio,
+                                        getSpeedRatioCb = self.getTiltSpeedRatio,
+                                        goHomeCb = self.goTiltHome,
+                                        setHomePositionCb = self.setTiltHomePosition,
+                                        setHomePositionHereCb = self.setTiltHomePositionHere,
+                                        navpose_update_rate = self.MAX_POSITION_UPDATE_RATE,
+                                        msg_if = self.msg_if,
+                                        node_if = self.ptx_if.node_if,
+                                        settings_if = self.ptx_if.settings_if,
+                                        save_data_if = self.ptx_if.save_data_if,
+                                        connect_navpose_if = self.ptx_if.connect_navpose_if,
+                                        namespace = nepi_sdk.create_namespace(self.node_namespace, 'tilt')
+                                        )
+            self.msg_if.pub_info(" ... SVX pan and tilt axis interfaces running")
+
             # Start an ptx activity check process that kills node after some number of failed comms attempts
             self.msg_if.pub_info("Starting an activity check process")
             update_interval = float(1.0) / self.MAX_POSITION_UPDATE_RATE
@@ -420,10 +506,10 @@ class SidusSS109SerialPTXNode:
             if hasjogspeed == True:
                 success = self.driver_jog_speed_dps(axis_str = axis_str, speed_dps = speed_dps, direction = direction)
             else:
-                self.driver_setSpeedRatio(speed_ratio, axis_str=self.pan_str)
+                self.driver_setSpeedRatio(speed_ratio, axis_str=self.tilt_str)
                 success = self.driver_jog(axis_str=axis_str, direction=direction)
 
-            
+
 
             if success:
                 if duration > 0:
@@ -533,6 +619,89 @@ class SidusSS109SerialPTXNode:
 
     def resetDevice(self):
         self.driver_resetDevice()
+
+
+    #######################
+    ### SVX IF Functions (one servo device per axis)
+    # Jog, jog at speed, the per-axis gotos and the per-axis speed ratios are shared
+    # with the PTX IF functions above. These adapt the rest to single-axis callbacks.
+    # Positions and limits passed in and out are in the node frame, like the PTX's.
+
+    def getPanPosition(self):
+        return self.current_position[0]
+
+    def getTiltPosition(self):
+        return self.current_position[1]
+
+    def getPanPositionTime(self):
+        return self.position_times[0]
+
+    def getTiltPositionTime(self):
+        return self.position_times[1]
+
+    def stopPan(self):
+        # The stop command does not stop a jog on this device, which is why the PTX
+        # passes no stopMovingCb and its IF stops by commanding the current position.
+        # Each servo stops its own axis the same way.
+        self.gotoPanPosition(self.current_position[0])
+
+    def stopTilt(self):
+        self.gotoTiltPosition(self.current_position[1])
+
+    def setPanSoftLimits(self, min_deg, max_deg):
+        self.setAxisSoftLimits(self.pan_str, self.PAN_DEG_DIR, min_deg, max_deg)
+
+    def setTiltSoftLimits(self, min_deg, max_deg):
+        self.setAxisSoftLimits(self.tilt_str, self.TILT_DEG_DIR, min_deg, max_deg)
+
+    def setAxisSoftLimits(self, axis_str, deg_dir, min_deg, max_deg):
+        # setSoftLimits for one axis: the device takes limits in its own direction,
+        # so a reversed axis negates and swaps them.
+        if deg_dir == -1:
+            [min_adj, max_adj] = [max_deg * -1, min_deg * -1]
+        else:
+            [min_adj, max_adj] = [min_deg, max_deg]
+        if min_adj < max_adj:
+            self.driver_setSoftLimit(min_adj, axis_str = axis_str, direction = -1)
+            nepi_sdk.sleep(self.serial_send_delay)
+            self.driver_setSoftLimit(max_adj, axis_str = axis_str, direction = 1)
+
+    def getPanSoftLimits(self):
+        return self.getAxisSoftLimits(self.pan_str, self.PAN_DEG_DIR)
+
+    def getTiltSoftLimits(self):
+        return self.getAxisSoftLimits(self.tilt_str, self.TILT_DEG_DIR)
+
+    def getAxisSoftLimits(self, axis_str, deg_dir):
+        # Inverse of setAxisSoftLimits, so DeviceSVXIF.initCb's read-then-write at
+        # startup leaves the limits where they were. -999 (read failed) passes through.
+        min_deg = self.driver_getSoftLimit(axis_str = axis_str, direction = -1)
+        nepi_sdk.sleep(self.serial_send_delay)
+        max_deg = self.driver_getSoftLimit(axis_str = axis_str, direction = 1)
+        if deg_dir == -1:
+            [min_deg, max_deg] = [-999 if max_deg == -999 else max_deg * -1,
+                                  -999 if min_deg == -999 else min_deg * -1]
+        return [min_deg, max_deg]
+
+    # DeviceSVXIF homes through gotoPositionCb and its own saved home position, so
+    # goHomeCb is what reports has_go_home_control. home_*_deg are in the device frame.
+    def goPanHome(self):
+        self.driver_moveToPanPosition(self.home_pan_deg)
+
+    def goTiltHome(self):
+        self.driver_moveToTiltPosition(self.home_tilt_deg)
+
+    def setPanHomePosition(self, pan_deg):
+        self.home_pan_deg = pan_deg * self.PAN_DEG_DIR
+
+    def setTiltHomePosition(self, tilt_deg):
+        self.home_tilt_deg = tilt_deg * self.TILT_DEG_DIR
+
+    def setPanHomePositionHere(self):
+        self.home_pan_deg = self.current_position[0] * self.PAN_DEG_DIR
+
+    def setTiltHomePositionHere(self):
+        self.home_tilt_deg = self.current_position[1] * self.TILT_DEG_DIR
 
 
    #######################

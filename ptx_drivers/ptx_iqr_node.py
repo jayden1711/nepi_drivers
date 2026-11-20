@@ -332,9 +332,10 @@ class IqrPanTiltNode:
             # Each axis is also exposed as its own servo device, so it can be driven
             # from the Servo devices page. Both share the PTX interface's node_if,
             # settings_if, save_data_if and connect_navpose_if, so no second SaveDataIF
-            # or ConnectNavPoseIF is created at the node namespace. The _pan/_tilt
-            # device names keep their namespaces (<node>/<device_name>/svx) and their
-            # node_if registry keys apart. Stop and speed stay shared across both
+            # or ConnectNavPoseIF is created at the node namespace. Each axis passes its
+            # own namespace, <node>/pan and <node>/tilt, so the servos land at
+            # <node>/pan/svx and <node>/tilt/svx with separate topics, saved params and
+            # node_if registry keys. Stop and speed stay shared across both
             # axes: the IQR has one stop command and one speed ratio. Neither axis
             # publishes navpose of its own; the NPX device above does.
             self.msg_if.pub_info("Launching NEPI SVX pan and tilt axis interfaces...")
@@ -367,7 +368,8 @@ class IqrPanTiltNode:
                                         node_if = self.node_if,
                                         settings_if = self.settings_if,
                                         save_data_if = self.save_data_if,
-                                        connect_navpose_if = self.connect_navpose_if
+                                        connect_navpose_if = self.connect_navpose_if,
+                                        namespace = nepi_sdk.create_namespace(self.node_namespace, 'pan')
                                         )
 
             tilt_device_info = copy.deepcopy(self.device_info_dict)
@@ -397,7 +399,8 @@ class IqrPanTiltNode:
                                         node_if = self.node_if,
                                         settings_if = self.settings_if,
                                         save_data_if = self.save_data_if,
-                                        connect_navpose_if = self.connect_navpose_if
+                                        connect_navpose_if = self.connect_navpose_if,
+                                        namespace = nepi_sdk.create_namespace(self.node_namespace, 'tilt')
                                         )
             self.msg_if.pub_info(" ... SVX pan and tilt axis interfaces running")
 

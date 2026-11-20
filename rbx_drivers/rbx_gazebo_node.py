@@ -673,8 +673,8 @@ class GazeboNode:
   def createMotorSvxIfs(self):
     # One DeviceSVXIF per motor, shaped like ptx_iqr's per-axis servos: each
     # shares the RBX interface's msg_if, node_if, settings_if, save_data_if and
-    # connect_navpose_if, and its <device name>_motor_<n> device name gives it
-    # its own <node>/<name>/svx namespace, status topic and node_if keys.
+    # connect_navpose_if, and passes its own <node>/motor_<n> namespace, so it
+    # lands at <node>/motor_<n>/svx with its own topics, params and node_if keys.
     # Built after RBXRobotIF because they share its IFs; RBXRobotIF holds the
     # same motor_svx_if_dict object, so it sees them once they are filled in.
     self.msg_if.pub_info("Launching NEPI SVX motor interfaces...")
@@ -700,7 +700,8 @@ class GazeboNode:
                                         node_if = self.node_if,
                                         settings_if = self.settings_if,
                                         save_data_if = self.save_data_if,
-                                        connect_navpose_if = self.connect_navpose_if
+                                        connect_navpose_if = self.connect_navpose_if,
+                                        namespace = nepi_sdk.create_namespace(self.node_namespace, 'motor_' + str(motor_ind + 1))
                                         )
     # DeviceSVXIF's init restores its saved speed ratio through setSpeedRatioCb
     # during construction. Run commands are ignored until here, so starting the
