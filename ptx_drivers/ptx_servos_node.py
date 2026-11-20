@@ -36,6 +36,7 @@ from nepi_interfaces.msg import DeviceSVXStatus
 
 from nepi_api.connect_device_if_svx import ConnectSVXDeviceIF
 from nepi_api.device_if_ptx import PTXActuatorIF
+from nepi_api.device_if_npx import NPXDeviceIF
 from nepi_api.messages_if import MsgIF
 
 
@@ -259,12 +260,28 @@ class ServosPTXNode:
                                     goHomeCb = self.goHome,
                                     setHomePositionCb = self.setHomePosition,
                                     setHomePositionHereCb = self.setHomePositionHere,
-                                    getNavPoseCb = self.getNavPoseDict,
                                     navpose_update_rate = self.MAX_POSITION_UPDATE_RATE,
-                                    deviceResetCb = self.resetDevice                                    
+                                    deviceResetCb = self.resetDevice
 
                                     )
         self.msg_if.pub_info(" ... PTX interface running")
+
+        ##################################
+        # Setup NPX IF Class ####################
+        # PTXActuatorIF does not publish a navpose of its own; the NPX device publishes
+        # this pan tilt's navpose at <node>/<device_name>/npx/navpose.
+        self.msg_if.pub_debug("Starting NPX Device IF Initialization")
+        self.npx_if = NPXDeviceIF(device_info = self.device_info_dict,
+            data_source_description = 'Pan Tilt',
+            data_ref_description = 'Pan Tilt Center Axis',
+            getNavPoseCb = self.getNavPoseCb,
+            max_navpose_update_rate = self.MAX_POSITION_UPDATE_RATE,
+            msg_if = self.msg_if,
+            node_if = self.ptx_if.node_if,
+            settings_if = self.ptx_if.settings_if,
+            save_data_if = self.ptx_if.save_data_if,
+            connect_navpose_if = self.ptx_if.connect_navpose_if
+            )
 
         # Start an ptx activity check process that kills node after some number of failed comms attempts
         self.msg_if.pub_info("Starting an activity check process")
@@ -410,7 +427,7 @@ class ServosPTXNode:
 
 
        
-    def getNavPoseDict(self):
+    def getNavPoseCb(self):
         pan_deg, tilt_deg = self.current_position
         # A copy: assigning BLANK_NAVPOSE_DICT itself would write this node's values into the
         # shared module default
@@ -422,6 +439,11 @@ class ServosPTXNode:
         # when it was sampled.
         navpose_dict['yaw_deg'] = pan_deg
         navpose_dict['pitch_deg'] = tilt_deg
+
+        navpose_dict['has_pan_tilt'] = True
+        navpose_dict['time_pan_tilt'] = nepi_utils.get_time()
+        navpose_dict['pan_deg'] = pan_deg
+        navpose_dict['tilt_deg'] = tilt_deg
         return navpose_dict
 
 
